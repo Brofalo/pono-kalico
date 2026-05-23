@@ -104,12 +104,38 @@ rpmsg_transport_init(void)
     int cold_boot = rpmsg_tx_avail_idx() == 0;
 
     if (cold_boot) {
-        // Wait for Linux to finish virtio setup.
-        // Linux populates the TX vring (vring0) with empty buffers when
-        // virtio_rpmsg_bus probes. Until that happens, avail->idx == 0.
-        hal_debug_print("rpmsg: waiting for Linux...\n");
-        msgbox_recv_blocking(MSGBOX_RPMSG_RX_CHANNEL);
-        hal_debug_print("rpmsg: Linux is ready\n");
+        // Wait for Linux to finish virtio setup, bounded by ~10s busy-poll
+        // wall clock at typical HiFi4 ~600 MHz. Linux populates the TX
+        // vring (vring0) with empty buffers when virtio_rpmsg_bus probes;
+        // until then avail->idx == 0.
+        //
+        // Replaces the previous unbounded `msgbox_recv_blocking` call which
+        // would hang the DSP forever if Linux never came up (kernel panic,
+        // init failure, hw fault). On timeout, fall through to the warm-
+        // restart sync path: even if Linux IS up but late, sync_indices()
+        // + clear_pending_announcements() recovers cleanly because the
+        // vring state is shared memory.
+        //
+        // Per Jack-checkpoint FQ1 (2026-05-23): 10s timeout + warm-restart
+        // fallback. Closes feedback_pono_print_firmware_ultrathink_source
+        // 2026-05-23 F-G2 (no-timeout-on-blocking-call).
+        hal_debug_print("rpmsg: waiting for Linux (bounded ~10s)...\n");
+        volatile uint32_t timeout_iters = 100000000U;
+        uint32_t message;
+        int got_msg = 0;
+        while (timeout_iters--) {
+            if (msgbox_recv(MSGBOX_RPMSG_RX_CHANNEL, &message) == 0) {
+                got_msg = 1;
+                break;
+            }
+        }
+        if (got_msg) {
+            hal_debug_print("rpmsg: Linux is ready\n");
+        } else {
+            hal_debug_print("rpmsg: cold-boot wait timed out, attempting warm-restart sync\n");
+            rpmsg_sync_indices();
+            rpmsg_clear_pending_announcements();
+        }
     } else {
         hal_debug_print("rpmsg: warm restart, syncing with Linux\n");
         rpmsg_sync_indices();
