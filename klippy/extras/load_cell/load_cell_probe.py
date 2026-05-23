@@ -355,10 +355,10 @@ class LoadCellProbeConfigHelper:
             config, "tare_time", default=5.0 / 50.0, minval=0.01, maxval=1.0
         )
         # triggering options
-        self._trigger_force_param = intParamHelper(
+        self._trigger_force_param = floatParamHelper(
             config, "trigger_force", default=75, minval=10, maxval=250
         )
-        self._force_safety_limit_param = intParamHelper(
+        self._force_safety_limit_param = floatParamHelper(
             config, "force_safety_limit", minval=100, default=5000
         )
 
