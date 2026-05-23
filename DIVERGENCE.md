@@ -60,6 +60,9 @@ Brofalo-only commits on top of OC's `afe7178d`:
 | patch | recipe | deferred because | unblock criterion |
 |-------|--------|------------------|-------------------|
 | `0002-reduce-calibration-difference-tolerance.patch` | pono-print-os meta-opencentauri/recipes-apps/klipper/files/ | foundation plan: conditional on HX711 noise-floor bench measurement | Jack-bench-action: measure HX711 noise floor on installed load cells; if system noise approaches 0.1% (Patch 2 threshold) the patch becomes safety-warrantable; if system noise much lower than 0.1%, retain upstream 1% tolerance OR adjust to 0.5% as a middle path |
+| FQ1 DSP cold-boot timeout | designed-but-deferred; target = pono-kalico commit on top of `5d0a9ed8` | msgbox SDK header access needed; `msgbox_recv_blocking` is the only call site at `src/hifi4/rpmsg_transport.c:111` but no msgbox.h visible in the kalico source tree | probe pono-prime Yocto WORKDIR `recipe-sysroot-native/usr/include/**/msgbox*.h` OR fetch Espressif HiFi4 SDK; design = 10s timeout + warm-restart fallback (Jack pick FQ1 Recommended 2026-05-23) |
+| FQ2 DSP strip + debug-split | designed-but-deferred; target = pono-print-os edit to `kalico-firmware-dsp_2026.02.00.bb` | Yocto rebuild + DSP boot-via-remoteproc verification needed before push; risk if Xtensa strip tool bugs OR remoteproc requires un-stripped binary for symbol resolution | rebuild kalico-firmware-dsp with `INHIBIT_PACKAGE_STRIP` + `INHIBIT_PACKAGE_DEBUG_SPLIT` removed; verify `.elf` size decreases + `-dbg` package auto-generated; Jack-bench-action: flash to printer + verify DSP boots + RPMSG up (Jack pick FQ2 Recommended 2026-05-23) |
+| OC cosmos main drift | tracking-only (no patch needed yet) | OC cosmos main moved from `44fd4116` (Brofalo/pono-print-os fork-time anchor) to `1836de0d "Misc fixes for new calibration routine (#190)"` since 2026-05-22; OC kalico rpmsg-with-new-hx71x still stale at `afe7178d` (no drift) | back-merge OC cosmos main into pono-print-os main when batch is large enough; not blocking V1.0 since changes are post-fork-time and we have not adopted them. Re-probe at start of every Pono Print firmware session per Class 222. |
 
 ## Migrated patches (NOT pending, recorded for audit lineage)
 
@@ -73,11 +76,22 @@ Brofalo-only commits on top of OC's `afe7178d`:
   change to pono-kalico source.
 - Reviewers checking this file should grep for `TBD` to find pending
   upstream-PR-target decisions.
-- The R2 cap (10 active Brofalo-only commits vs KalicoCrew main) is a
-  soft trigger. Current count (2026-05-23 post-FQ3): 5 patches migrated
-  (`fb924646`, `f7147f4e`, `4218e722`, `299dedef`, `5d0a9ed8`) plus 3
-  inherited from OC parent (`afe7178d`, `f66de876`, `5f9fabbd`) for a
-  total of 8. Headroom = 2 before R2 fires.
+- The R2 cap (10 active Brofalo-only commits vs OC parent) is a soft
+  trigger. Two directions tracked separately (corrected 2026-05-23 per
+  #RemeyZeee AD QA A4):
+  - **vs OC parent (rpmsg-with-new-hx71x @ afe7178d):** 5 patches
+    (`fb924646`, `f7147f4e`, `4218e722`, `299dedef`, `5d0a9ed8`) + 3
+    docs (`06f701c0`, `58a0dc25`, `38ed32c6`) = **8 Brofalo-only
+    commits**. Headroom = 2 before R2 fires.
+  - **vs KalicoCrew/kalico main:** ahead by **73 commits** (this
+    Brofalo-only 8 plus 65 inherited from OC parent: afe7178d,
+    f66de876, 5f9fabbd, plus OC's full HiFi4 + RPMSG + load_cell_fusion
+    feature stack). Behind by 17 commits (KalicoCrew main has shipped
+    17 commits since fc33b620 that we have not absorbed).
+- The 3 inherited OC commits (`afe7178d`, `f66de876`, `5f9fabbd`) are
+  NOT Brofalo-only (we share them with OC), but they ARE divergences
+  vs KalicoCrew main + ARE listed in the upper "vs KalicoCrew" table
+  because they propagate through this fork to the firmware build.
 
 ## Cross-references
 
