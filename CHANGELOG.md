@@ -10,6 +10,15 @@ divergence vs upstream (KalicoCrew + OpenCentauri).
 
 ### Added
 
+- `configfile: remove save-config subfile duplicate check (OC PR #174
+  migration)` (`5d0a9ed8`, Sims attribution preserved). Migrates
+  cosmos's `0001-remove-save-config-subfile-check.patch` from a SRC_URI
+  Yocto patch in `Brofalo/pono-print-os` to a native signed commit
+  here. Removes `_build_config_wrapper` + `_strip_duplicates` from
+  `PrinterConfig.read_main_config()` and `_disallow_include_conflicts`
+  from `.save_config()`. Functional impact for default Pono Print users
+  is ZERO (shipped cosmos printer.cfg has 0 sections); risk surface is
+  user-customized printer.cfg only.
 - `heaters: make sensor sample loss tolerance configurable (#869)`
   (`299dedef`, dalegaard attribution preserved). Cherry-pick of
   KalicoCrew main `fc33b620` (2026-05-05). Adds `lost_update_tolerance`
