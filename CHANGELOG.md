@@ -8,6 +8,12 @@ divergence vs upstream (KalicoCrew + OpenCentauri).
 
 ## [Unreleased] - 2026-05-23
 
+### Security
+- `SECURITY.md` added at repository root. Documents reporting path (GitHub Security advisory until disclosure email locked), pre-1.0 support stance (gated on same prerequisites as `Brofalo/pono-print-os` 1.0), signing state (SSH commits live; firmware cosign transitive via parent SWU), and threat surface. Contains a `TBD JACK-INPUT` marker for the shared disclosure email + key custody plan.
+
+### Changed
+- README.md pivoted with a `Brofalo/pono-kalico` fork banner prepended above the upstream KalicoCrew/kalico README. Banner cross-links DIVERGENCE.md, CHANGELOG.md, SECURITY.md, the Yocto OS layer fork, and the slicer pipeline. Upstream README content preserved verbatim below the banner separator.
+
 ### Added
 
 - `configfile: remove save-config subfile duplicate check (OC PR #174

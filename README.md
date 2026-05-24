@@ -1,3 +1,38 @@
+# Brofalo/pono-kalico
+
+Signed Klipper-based MCU firmware and host fork for
+[Pono Print](https://github.com/PONOdata/pono-print). Tracks
+[KalicoCrew/kalico](https://github.com/KalicoCrew/kalico) (community
+Klipper fork) via [OpenCentauri/kalico](https://github.com/OpenCentauri/kalico)'s
+`rpmsg-with-new-hx71x` branch for Centauri Carbon hardware support.
+
+| Surface | Pointer |
+|---|---|
+| Live commit divergence | [DIVERGENCE.md](DIVERGENCE.md) |
+| Release history | [CHANGELOG.md](CHANGELOG.md) |
+| Security policy | [SECURITY.md](SECURITY.md) |
+| Yocto OS layer | [Brofalo/pono-print-os](https://github.com/Brofalo/pono-print-os) |
+| Slicer pipeline | [PONOdata/pono-print](https://github.com/PONOdata/pono-print) |
+
+Pono Print targets the Elegoo Centauri Carbon (CC1). This repository
+ships host klippy Python code and MCU firmware C code consumed by the
+parent Yocto OS layer.
+
+**Default branch:** `rpmsg-with-new-hx71x` (tracks OC's WIP branch
+for Centauri Carbon).
+
+**Signing.** SSH commit signing live; MCU firmware cosign signing
+transitive via parent SWU (foundation Step 6, blocking from week 0).
+
+**Stability.** Pre-1.0. Fix-forward on `rpmsg-with-new-hx71x`. The 1.0
+tag is cut alongside `Brofalo/pono-print-os` 1.0; both forks gate on
+the same prerequisites. Do not run pre-1.0 firmware on production
+hardware.
+
+---
+
+# Upstream README (KalicoCrew/kalico)
+
 <p align="center"><a href="https://docs.kalico.gg"><img align="center" src="docs/logo/kalico-big.png" alt="Kalico Logo"></a></p>
 
 [![Action Status](https://github.com/KalicoCrew/kalico/actions/workflows/ci-build_test.yaml/badge.svg?branch=main)](https://github.com/KalicoCrew/kalico/actions/workflows/ci-build_test.yaml)
