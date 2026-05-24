@@ -6,18 +6,23 @@ Pono Print (Elegoo Centauri Carbon target).
 
 ## Reporting a Vulnerability
 
-**TBD JACK-INPUT:** disclosure email address. Pending options:
-
-- `security@ponodata.com` (would require MX record + mailbox provisioning)
-- Jack personal address with auto-forward + filter
-- Foundry-routed triage (Captain Spot) with Jack-confirmation gate
-
-Until the disclosure email is locked, file a private security advisory
-via GitHub:
-
+Email **security@ponodata.com** (or file a private GitHub Security
+advisory at
 <https://github.com/Brofalo/pono-kalico/security/advisories/new>
+if you prefer the GitHub flow). MX + mailbox provisioning is in
+progress as of 2026-05-24; until DNS propagates, the GitHub advisory
+path is the canonical reporting surface.
 
-Do not file public issues for security bugs.
+Please include:
+
+- The repository + commit SHA where you observed the issue.
+- A minimal reproduction (config excerpt, klippy log line, firmware
+  binary SHA256 if applicable).
+- Your preferred contact + disclosure timeline expectations.
+
+Do not file public issues for security bugs. Do not post details to
+community Discord (Kalico / OpenCentauri / Klipper). We aim for a
+90-day default disclosure window with acknowledgment within 7 days.
 
 ## Supported Versions
 
@@ -64,10 +69,11 @@ Pono Print SWU pipeline.
 
 ## Key Custody
 
-**TBD JACK-INPUT:** key custody plan. See companion
-[`Brofalo/pono-print-os` SECURITY.md](https://github.com/Brofalo/pono-print-os/blob/main/SECURITY.md)
-for the shared policy (same signing identity + same custody
-constraints across both forks).
+Locked 2026-05-24 (Jack approval): same signing identity, recovery
+plan, and rotation cadence as
+[`Brofalo/pono-print-os` SECURITY.md Key Custody](https://github.com/Brofalo/pono-print-os/blob/main/SECURITY.md#key-custody).
+Both forks operate under the shared Jack-only primary + Bridge Crew
+named-recovery (30-day-unavailable trigger) + annual-rotation policy.
 
 ## Threat Surface
 
