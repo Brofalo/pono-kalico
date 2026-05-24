@@ -84,21 +84,28 @@ Brofalo-only commits on top of OC's `afe7178d`:
   #RemeyZeee AD QA A4):
   - **vs OC parent (rpmsg-with-new-hx71x @ afe7178d):** 9 patches
     (`fb924646`, `f7147f4e`, `4218e722`, `299dedef`, `5d0a9ed8`,
-    `a30ddf63`, `32e92f89`, `714764d1`, `836dcb27`) + 8 docs
+    `a30ddf63`, `32e92f89`, `714764d1`, `836dcb27`) + 10 docs
     (`06f701c0`, `58a0dc25`, `38ed32c6`, `08c51cba`, `5ae76b83`,
-    `cb8e1130`, `58d475b0`, `1f3aee10`) = **17 Brofalo-only
-    commits**. R2 cap (10) exceeded since FQ1 + 4 doc commits landed
-    pre-AQ2 (Class 222 cross-session count-bookkeeping decay: prior
-    sessions' edits to this count line did not recount from
-    afe7178d; corrected 2026-05-23 #RemeyZeee AD QA pass). 5 of 9
-    patches are KalicoCrew-main back-merges (NOT-needed-upstream:
-    `f7147f4e` + `4218e722` + `299dedef` + `32e92f89` + `714764d1` +
-    `836dcb27`). 3 are migrated-from-OC-patches (`5d0a9ed8`,
-    `4218e722`). Genuine upstream-candidates: 2 (`fb924646` PR #4
-    fix + `a30ddf63` FQ1 timeout). R2 purge intent (bound upstream
-    debt) does not apply at 17/10 because most excess is back-merge
-    + migration bookkeeping, not net-new upstream debt; treat the
-    R2 trip as recognition-signal-for-count-recount, not action.
+    `cb8e1130`, `58d475b0`, `1f3aee10`, `0efbde3f`, `24873c02`) =
+    **19 Brofalo-only commits** (recount 2026-05-24 after PR #1
+    SECURITY-bootstrap-docs merged `24873c02` + 2026-05-23 D1 fix
+    `0efbde3f` not previously tallied). R2 cap (10) still exceeded
+    but the 2-commit increase is doc-only (SECURITY.md + README
+    banner pivot + CHANGELOG entry). Triage of the 9 patches
+    (corrected 2026-05-24 per CodeRabbit PR #3 review of pre-
+    existing count drift): 4 are KalicoCrew-main back-merges
+    (NOT-needed-upstream: `299dedef` + `32e92f89` + `714764d1` +
+    `836dcb27`); 1 is a Klipper3D direct port (`f7147f4e`
+    `87f5f135` to OC's restructured tree); 2 are migrated-from-OC-
+    patches (`5d0a9ed8` + `4218e722`); 2 are genuine upstream-
+    candidates (`fb924646` PR #4 fix + `a30ddf63` FQ1 timeout).
+    R2 purge intent (bound upstream debt) still does not apply at
+    19/10 because excess is back-merge + migration + doc
+    bookkeeping, not net-new upstream debt; treat the R2 trip as
+    recognition-signal-for-count-recount, not action. `a30ddf63`
+    upstream-PR DEFERRED 2026-05-24 (Jack click-menu): gated on
+    bench-verify + `skill_public_pr.md` SOP existence; skill shipped
+    2026-05-24, bench-verify still Jack-at-printer-pending.
 
     **Recount discipline (added 2026-05-23):** future editors of
     this count line MUST run `git log afe7178d..HEAD --oneline | wc -l`
@@ -124,6 +131,8 @@ Brofalo-only commits on top of OC's `afe7178d`:
 
 ## Cross-references
 
+- `skill_public_pr.md` (canonical upstream submission SOP; required before any KalicoCrew/Klipper3D PR opens from this fork; banked 2026-05-24 per Jack directive)
+- Class 248 (Codename-to-Endpoint-Type Substrate Drift; banked 2026-05-24 catalog promotion; recognition signal for "Build runner" / "host on" / "deployed to" claims in fork docs that need anchor against actual `.github/workflows/*.yml` `runs-on:` lines)
 - `feedback_foundation_plan_ensemble_audit_2026_05_23.md` Section 5 (R1-R4
   divergence-log policy)
 - `feedback_pono_print_os_foundation_plan_2026_05_23.md` Jack-checkpoint
