@@ -82,16 +82,30 @@ Brofalo-only commits on top of OC's `afe7178d`:
 - The R2 cap (10 active Brofalo-only commits vs OC parent) is a soft
   trigger. Two directions tracked separately (corrected 2026-05-23 per
   #RemeyZeee AD QA A4):
-  - **vs OC parent (rpmsg-with-new-hx71x @ afe7178d):** 8 patches
+  - **vs OC parent (rpmsg-with-new-hx71x @ afe7178d):** 9 patches
     (`fb924646`, `f7147f4e`, `4218e722`, `299dedef`, `5d0a9ed8`,
-    `32e92f89`, `714764d1`, `836dcb27`) + 3 docs (`06f701c0`,
-    `58a0dc25`, `38ed32c6`) = **11 Brofalo-only commits**. R2 cap (10)
-    tripped 2026-05-23 by AQ2 back-merge cherry-pick batch. All 3 new
-    commits are KalicoCrew-main back-merges (NOT-needed-upstream),
-    so the R2 purge intent (bound upstream debt) does not apply;
-    treat the R2 trip as bookkeeping, not action.
-  - **vs KalicoCrew/kalico main:** ahead by **76 commits** (the
-    Brofalo-only 11 plus 65 inherited from OC parent: afe7178d,
+    `a30ddf63`, `32e92f89`, `714764d1`, `836dcb27`) + 8 docs
+    (`06f701c0`, `58a0dc25`, `38ed32c6`, `08c51cba`, `5ae76b83`,
+    `cb8e1130`, `58d475b0`, `1f3aee10`) = **17 Brofalo-only
+    commits**. R2 cap (10) exceeded since FQ1 + 4 doc commits landed
+    pre-AQ2 (Class 222 cross-session count-bookkeeping decay: prior
+    sessions' edits to this count line did not recount from
+    afe7178d; corrected 2026-05-23 #RemeyZeee AD QA pass). 5 of 9
+    patches are KalicoCrew-main back-merges (NOT-needed-upstream:
+    `f7147f4e` + `4218e722` + `299dedef` + `32e92f89` + `714764d1` +
+    `836dcb27`). 3 are migrated-from-OC-patches (`5d0a9ed8`,
+    `4218e722`). Genuine upstream-candidates: 2 (`fb924646` PR #4
+    fix + `a30ddf63` FQ1 timeout). R2 purge intent (bound upstream
+    debt) does not apply at 17/10 because most excess is back-merge
+    + migration bookkeeping, not net-new upstream debt; treat the
+    R2 trip as recognition-signal-for-count-recount, not action.
+
+    **Recount discipline (added 2026-05-23):** future editors of
+    this count line MUST run `git log afe7178d..HEAD --oneline | wc -l`
+    before quoting the total. The numbers in this paragraph are
+    derived, not asserted. Class 222 propagation prevention.
+  - **vs KalicoCrew/kalico main:** ahead by **82 commits** (the
+    Brofalo-only 17 plus 65 inherited from OC parent: afe7178d,
     f66de876, 5f9fabbd, plus OC's full HiFi4 + RPMSG + load_cell_fusion
     feature stack). Behind by **14 commits** (was 17; 3 absorbed
     via AQ2 cherry-pick on 2026-05-23: 1257292 + 29e8ef4 + b3061d2).
