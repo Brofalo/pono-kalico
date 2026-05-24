@@ -42,6 +42,9 @@ Per Section 5 of `feedback_foundation_plan_ensemble_audit_2026_05_23.md`:
 | `4218e722` | Reduce log rotate threshold | NOT needed | Inherited from OC parent fork via pre-existing SRC_URI patch. James Turton authored 2026-05-07. OC + Klipper3D both have this OR an equivalent; verify before submission. |
 | `299dedef` | heaters: make sensor sample loss tolerance configurable (#869) | NOT needed | Cherry-pick of KalicoCrew main `fc33b620` (dalegaard, 2026-05-05). Already upstream in KalicoCrew. Brofalo carries it because OC has not back-merged. When OC pulls KalicoCrew main this becomes redundant in this fork. |
 | `5d0a9ed8` | configfile: remove save-config subfile duplicate check (OC PR #174 migration) | OC, NOT needed | Migrates cosmos's 0001-remove-save-config-subfile-check.patch (Sims attribution, OC cosmos PR #174) from SRC_URI patch to native commit. Pre-existing OC behavior change; not for KalicoCrew unless OC formally proposes the upstream. |
+| `32e92f89` | Load Cell Tap Analysis (#836) | NOT needed | Cherry-pick of KalicoCrew main `1257292` (Garreth Jeremiah, 2026-04-08). Adds `tap_quality_classifier.py` + extends `tap_analysis.py`. Direct fit for our HX71X load-cell stack. Original author preserved. Conflict-resolved on `load_cell_probe.py` (kept our `floatParamHelper` from `f7147f4e` + took new `drift_safety_limit` + pullback config) + 2 trivial doc conflicts. When OC pulls KalicoCrew main this becomes redundant. |
+| `714764d1` | probe: add alternating probe direction support (#882) | NOT needed | Cherry-pick of KalicoCrew main `29e8ef4` (2026-05-08). Probe reliability quality-of-life. Already upstream in KalicoCrew. |
+| `836dcb27` | Default to extracting all moves in the trapq when end time is not specified (#872) | NOT needed | Cherry-pick of KalicoCrew main `b3061d2` (2026-04-19). Motion planning subtle correctness fix. Already upstream in KalicoCrew. |
 
 ## Active divergences (from OpenCentauri/kalico rpmsg-with-new-hx71x)
 
@@ -79,15 +82,27 @@ Brofalo-only commits on top of OC's `afe7178d`:
 - The R2 cap (10 active Brofalo-only commits vs OC parent) is a soft
   trigger. Two directions tracked separately (corrected 2026-05-23 per
   #RemeyZeee AD QA A4):
-  - **vs OC parent (rpmsg-with-new-hx71x @ afe7178d):** 5 patches
-    (`fb924646`, `f7147f4e`, `4218e722`, `299dedef`, `5d0a9ed8`) + 3
-    docs (`06f701c0`, `58a0dc25`, `38ed32c6`) = **8 Brofalo-only
-    commits**. Headroom = 2 before R2 fires.
-  - **vs KalicoCrew/kalico main:** ahead by **73 commits** (this
-    Brofalo-only 8 plus 65 inherited from OC parent: afe7178d,
+  - **vs OC parent (rpmsg-with-new-hx71x @ afe7178d):** 8 patches
+    (`fb924646`, `f7147f4e`, `4218e722`, `299dedef`, `5d0a9ed8`,
+    `32e92f89`, `714764d1`, `836dcb27`) + 3 docs (`06f701c0`,
+    `58a0dc25`, `38ed32c6`) = **11 Brofalo-only commits**. R2 cap (10)
+    tripped 2026-05-23 by AQ2 back-merge cherry-pick batch. All 3 new
+    commits are KalicoCrew-main back-merges (NOT-needed-upstream),
+    so the R2 purge intent (bound upstream debt) does not apply;
+    treat the R2 trip as bookkeeping, not action.
+  - **vs KalicoCrew/kalico main:** ahead by **76 commits** (the
+    Brofalo-only 11 plus 65 inherited from OC parent: afe7178d,
     f66de876, 5f9fabbd, plus OC's full HiFi4 + RPMSG + load_cell_fusion
-    feature stack). Behind by 17 commits (KalicoCrew main has shipped
-    17 commits since fc33b620 that we have not absorbed).
+    feature stack). Behind by **14 commits** (was 17; 3 absorbed
+    via AQ2 cherry-pick on 2026-05-23: 1257292 + 29e8ef4 + b3061d2).
+    Additional 4 KalicoCrew commits (f26c79c stepper, 043f87c bed_mesh
+    startup, 7beefc3 bed_mesh horizontal_z_clearance, 2790222
+    pressure_advance_smooth_time) tested as "empty" cherry-picks
+    confirming those changes are ALREADY in our tree via OC's prior
+    KalicoCrew merge of 97ce44a (PR #760 baseline). Remaining 10
+    KalicoCrew main commits are NOT APPLICABLE to our hardware
+    (ADS131M0X / SAMD51 / AHT10 / AHT30 / LDC1612 / stm32g4 / pico-sdk
+    / dockable_probe / filament_width_sensor / formatting).
 - The 3 inherited OC commits (`afe7178d`, `f66de876`, `5f9fabbd`) are
   NOT Brofalo-only (we share them with OC), but they ARE divergences
   vs KalicoCrew main + ARE listed in the upper "vs KalicoCrew" table
