@@ -386,7 +386,11 @@ class LoadCellProbeConfigHelper:
         return max(2, math.ceil(tare_time * sps))
 
     def get_trigger_force_grams(self, gcmd=None) -> int:
-        return self._trigger_force_param.get(gcmd)
+        # trigger_grams is a uint32_t MCU command field; this param became a
+        # float in f7147f4e ("int to float helpers to match docs") with no cast
+        # at the send site, so a float reached the integer packer (float & int
+        # TypeError) and aborted every load-cell probe. Round to int.
+        return int(round(self._trigger_force_param.get(gcmd)))
 
     def get_safety_limit_grams(self, gcmd=None) -> int:
         return self._force_safety_limit_param.get(gcmd)
