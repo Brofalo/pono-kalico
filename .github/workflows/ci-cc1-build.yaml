@@ -6,6 +6,9 @@ on:
     branches:
       - open-centauri
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
