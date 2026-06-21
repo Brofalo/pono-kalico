@@ -3,6 +3,9 @@ name: Rebase bleeding-edge-v2
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   rebase-bleeding-edge:
     runs-on: ubuntu-latest
