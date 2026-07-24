@@ -32,7 +32,7 @@ pyserial==3.4
     # via kalico
 python-can==4.5.0
     # via kalico
-setuptools==78.1.1 ; python_full_version >= '3.12'
+setuptools==83.0.0 ; python_full_version >= '3.12'
     # via kalico
 typing-extensions==4.13.2
     # via python-can
