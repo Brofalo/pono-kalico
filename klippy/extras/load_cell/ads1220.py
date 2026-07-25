@@ -200,9 +200,10 @@ class ADS1220(LoadCellSensor):
         self.attach_probe_cmd.send([self.oid, load_cell_probe_oid])
 
     def build_attach_fusion_cmd(self, fusion_oid: int, invert: bool) -> str:
-        return (
-            "ads1220_attach_fusion oid=%d fusion_oid=%d invert=%d"
-            % (self.oid, fusion_oid, int(invert))
+        return "ads1220_attach_fusion oid=%d fusion_oid=%d invert=%d" % (
+            self.oid,
+            fusion_oid,
+            int(invert),
         )
 
     def prepare_sampling(self):

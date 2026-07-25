@@ -39,6 +39,13 @@ indent-width = 4
 exclude = ["./.github", "./.history", "./config", "./docs", "./lib", "./src"]
 
 [tool.ruff.lint]
+# Pin the rule set EXPLICITLY. Without `select`, this config inherits ruff's
+# DEFAULT rules, which is an unstable contract: ruff 0.16 widened the defaults
+# and lit up hundreds of findings in klippy/, which is vendored upstream Klipper
+# code we deliberately do not diverge from. These four are exactly ruff's
+# historical defaults (E4, E7, E9, F), so behaviour is unchanged, but a future
+# ruff release can no longer add rules to this repo without a commit saying so.
+select = ["E4", "E7", "E9", "F"]
 extend-select = [
   "B006",  # Checks for uses of mutable objects as function argument defaults
   "FA100", # Detect when type annotations could be made better with PEP563
