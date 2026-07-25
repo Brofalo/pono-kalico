@@ -18,7 +18,7 @@ markupsafe==2.1.5
     # via
     #   jinja2
     #   kalico
-msgpack==1.2.1 ; sys_platform != 'win32'
+msgpack==1.1.0 ; sys_platform != 'win32'
     # via python-can
 numpy==2.0.2 ; python_full_version < '3.10'
     # via kalico
