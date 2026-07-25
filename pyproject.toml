@@ -20,7 +20,11 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-  "ruff>=0.9.3",
+  # Capped below 0.16: ruff 0.16.0 greatly expanded its default lint rule set
+  # (UP/LOG/SIM/BLE/TRY/S families), taking `ruff check .` here from 2 errors to
+  # 2222. ruff-action installs the newest version satisfying this specifier, so
+  # the cap is what keeps CI on 0.15.x. Raise deliberately, not incidentally.
+  "ruff>=0.9.3,<0.16",
   "pre-commit>=4.0.1",
   "pytest-xdist>=3.6.1",
   "pytest>=8.3.4",
