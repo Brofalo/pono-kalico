@@ -33,8 +33,8 @@ struct trsync;
 // Maximum sensors per device
 #define HX711S_MAX_SENSORS      4
 
-// Math constant
-#define HX711S_PI 3.14159f
+// The high-pass cutoff and pi live in klippy/extras/hx711s.py now, because
+// the host computes the filter coefficient and sends it.
 
 /****************************************************************
  * Enumerations
@@ -71,8 +71,12 @@ struct hx711s_hpf_params {
     int32_t vi_prev;        // Previous input
     int32_t vo;             // Current output
     int32_t vo_prev;        // Previous output
-    float cutoff_frq_hz;    // Cutoff frequency in Hz
-    float acq_frq_hz;       // Acquisition frequency in Hz
+    // Precomputed filter coefficient, sent by the host. Deriving it here
+    // took three float divides per sample, which links __divsf3 and gets the
+    // image rejected by scripts/check-software-div.sh on any chip without a
+    // divide instruction. See _hpf_coeff in klippy/extras/hx711s.py, which
+    // reproduces the float32 sequence this used to run, bit for bit.
+    float coeff;
 };
 
 // Main HX711S sensor structure

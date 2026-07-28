@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 import logging
+import struct
 
 from klippy import mcu as klippy_mcu
 
@@ -249,6 +250,59 @@ class HX711S:
         )
         logging.info("HX711S: Initialized with %d sensors", self.sensor_count)
 
+    # High-pass filter constants. These used to live in src/sensor_hx711s.h and
+    # the MCU rebuilt the coefficient from them on every sample, at three float
+    # divides a time. It receives the coefficient now, which keeps __divsf3 out
+    # of images for chips with no divide instruction; scripts/check-software-div.sh
+    # rejects an image that links it.
+    HPF_CUTOFF_HZ = 5.0
+    HPF_PI = 3.14159
+    # The sg_mode the firmware treats as HX717 half bridge, which pins the
+    # sample period instead of taking it from rest_ticks.
+    SG_MODE_HX717_HALF_BRIDGE = 3
+
+    @staticmethod
+    def _f32(value):
+        """Round to the nearest float32, as C does after every float op."""
+        return struct.unpack("<f", struct.pack("<f", value))[0]
+
+    @classmethod
+    def _hpf_coeff_bits(cls, sample_rate):
+        """The old on-MCU float32 sequence, step for step, as raw float bits.
+
+        Deliberately not simplified to sample_rate / (sample_rate + 2*pi*cutoff):
+        evaluating it in the same order, rounding to float32 after each
+        operation, is what makes the result bit identical to what the firmware
+        used to compute, so the filter sees exactly the coefficient it always
+        did.
+        """
+        f32 = cls._f32
+        rc = f32(
+            f32(1.0)
+            / f32(f32(f32(2.0) * f32(cls.HPF_PI)) * f32(cls.HPF_CUTOFF_HZ))
+        )
+        coeff = f32(rc / f32(rc + f32(f32(1.0) / sample_rate)))
+        return struct.unpack("<I", struct.pack("<f", coeff))[0]
+
+    def _hpf_coeffs(self):
+        """Per-sensor and fusion coefficients, from the firmware's own inputs."""
+        f32 = self._f32
+        if (self.sg_mode & 0x0F) == self.SG_MODE_HX717_HALF_BRIDGE:
+            sample_period = 1500
+        else:
+            sample_period = self.rest_ticks & 0xFFFFFF
+        count = self.sensor_count & 0x0F
+        if sample_period < 1 or count < 1:
+            raise self.printer.config_error(
+                "hx711s: sample period and sensor count must both be at least 1"
+            )
+        sensor_rate = f32(f32(f32(1000000.0) / f32(sample_period)) / f32(count))
+        fusion_rate = f32(f32(1000000.0) / f32(sample_period))
+        return (
+            self._hpf_coeff_bits(sensor_rate),
+            self._hpf_coeff_bits(fusion_rate),
+        )
+
     def _build_config(self):
         # Pack configuration fields per MCU protocol
         hx711_count = ((self.install_dir & 0x0F) << 4) | (
@@ -271,9 +325,12 @@ class HX711S:
             | (self.th_k & 0xFF)
         )
 
+        hpf_coeff, hpf_fusion_coeff = self._hpf_coeffs()
+
         self.mcu.add_config_cmd(
             "config_hx711s oid=%d hx711_count=%d channels=%d rest_ticks=%d "
-            "kalman_q=%d kalman_r=%d max_th=%d min_th=%d k=%d"
+            "kalman_q=%d kalman_r=%d max_th=%d min_th=%d k=%d "
+            "hpf_coeff=%d hpf_fusion_coeff=%d"
             % (
                 self.oid,
                 hx711_count,
@@ -284,6 +341,8 @@ class HX711S:
                 self.max_th,
                 self.min_th,
                 k_packed,
+                hpf_coeff,
+                hpf_fusion_coeff,
             )
         )
 
