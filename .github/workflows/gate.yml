@@ -7,8 +7,65 @@ permissions:
   contents: read
 jobs:
   gate:
+    # Local, not PONOdata/gatekeeper: this repo is public and gatekeeper is
+    # private, and a public repo cannot call a private repo's reusable
+    # workflow. The local copy is the workaround, not drift.
     uses: ./.github/workflows/reusable-ci.yml
     with:
+      runner_labels: '["ubuntu-latest"]'
+      # Every command here was blank, so gate/lint, gate/typecheck, gate/test
+      # and gate/build were required while running nothing. This is printer
+      # firmware: the thing these checks guard moves a heated nozzle over a
+      # bed, and the required checks in front of it verified nothing.
+      #
+      # Ruff, Build test and Docs test already run all of this on pull_request
+      # and are green. None of them is a required check, so any of them could
+      # go red and the PR would still merge. These are the same commands,
+      # wired into the gate that merge protection actually enforces.
+      #
+      # ruff is capped below 0.16 to match the pyproject dev group. The
+      # comment on that pin is explicit: 0.16 expanded the default rule set
+      # and takes this tree from 2 errors to 2222. Raise it deliberately.
+      lint_cmd: >-
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        && export PATH="$HOME/.local/bin:$PATH"
+        && uv tool run --from "ruff>=0.9.3,<0.16" ruff check .
+        && uv tool run --from "ruff>=0.9.3,<0.16" ruff format --check .
+      # One interpreter, not the six the Build test matrix runs. That matrix
+      # still runs on every PR and keeps the version spread covered; this is
+      # the copy that has to be green before a merge is allowed, so it is
+      # sized to be fast enough that nobody wants to bypass it.
+      test_cmd: >-
+        docker pull dangerklippers/klipper-build:latest
+        && docker run -v "$PWD":/klipper dangerklippers/klipper-build:latest
+        --python 3.12 py.test -n auto
+      # build is DECLARED, and it should not stay that way. Arming it is what
+      # found the reason it cannot be armed yet.
+      #
+      # Running `docker build -f scripts/Dockerfile-build .` on this branch
+      # fails at link:
+      #
+      #   ld: address 0x19624 of out/klipper.elf section `.bss' is not within
+      #       region `SRAM_A2'
+      #   ld: Klipper image is too large
+      #   make: *** [Makefile:83: out/klipper.elf] Error 1
+      #
+      # The AR100 co-processor image overflows SRAM_A2 on this branch. That is
+      # a real firmware defect, not a CI problem, and it predates this change:
+      # nothing here touches src/.
+      #
+      # It has been invisible because Build test gates the firmware build on a
+      # paths-filter over src/, lib/, Makefile and friends, so any PR that
+      # does not touch those skips the compile entirely. The build has been
+      # failing behind a filter that made it look like it was not running
+      # rather than not passing.
+      #
+      # Arming this gate for real is the follow-up, once the AR100 image fits.
+      # Declaring it here states the break in the caller instead of leaving a
+      # required check green over a firmware that does not link.
+      #
+      # typecheck: no typechecker is configured in this tree, and Kalico
+      # follows upstream Klipper's layout with no annotations to check.
+      unconfigured_ok: "typecheck,build"
       run_semgrep: true
       run_dependency_review: true
-      runner_labels: '["ubuntu-latest"]'

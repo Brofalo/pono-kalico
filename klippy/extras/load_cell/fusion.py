@@ -91,8 +91,11 @@ class LoadCellFusion(LoadCellSensor):
         chip_smooth = self.sps * UPDATE_INTERVAL * 2
         self.ffreader = bulk_sensor.FixedFreqReader(self.mcu, chip_smooth, "<i")
         self.batch_bulk = bulk_sensor.BatchBulkHelper(
-            self.printer, self._process_batch, self._start_measurements,
-            self._finish_measurements, UPDATE_INTERVAL
+            self.printer,
+            self._process_batch,
+            self._start_measurements,
+            self._finish_measurements,
+            UPDATE_INTERVAL,
         )
         self.query_fusion_cmd = None
         self.attach_probe_cmd = None
@@ -100,12 +103,16 @@ class LoadCellFusion(LoadCellSensor):
 
     def _build_config(self):
         self.query_fusion_cmd = self.mcu.lookup_command(
-            "query_load_cell_fusion oid=%c active=%c")
+            "query_load_cell_fusion oid=%c active=%c"
+        )
         self.attach_probe_cmd = self.mcu.lookup_command(
-            "load_cell_fusion_attach_probe oid=%c load_cell_probe_oid=%c")
+            "load_cell_fusion_attach_probe oid=%c load_cell_probe_oid=%c"
+        )
         self.ffreader.setup_query_command(
             "query_load_cell_fusion_status oid=%c",
-            oid=self.oid, cq=self.mcu.alloc_command_queue())
+            oid=self.oid,
+            cq=self.mcu.alloc_command_queue(),
+        )
 
     def get_mcu(self):
         return self.mcu
@@ -142,7 +149,9 @@ class LoadCellFusion(LoadCellSensor):
         self.query_fusion_cmd.send([self.oid, 1])
         for sensor in self.sensors:
             sensor.start_sampling(rest_ticks)
-        logging.info("%s starting '%s' measurements", self.sensor_type, self.name)
+        logging.info(
+            "%s starting '%s' measurements", self.sensor_type, self.name
+        )
         self.ffreader.note_start()
 
     def _finish_measurements(self):
@@ -152,7 +161,9 @@ class LoadCellFusion(LoadCellSensor):
             sensor.stop_sampling()
         self.query_fusion_cmd.send_wait_ack([self.oid, 0])
         self.ffreader.note_end()
-        logging.info("%s finished '%s' measurements", self.sensor_type, self.name)
+        logging.info(
+            "%s finished '%s' measurements", self.sensor_type, self.name
+        )
 
     def _process_batch(self, eventtime) -> BulkAdcData:
         prev_overflows = self.ffreader.get_last_overflows()
