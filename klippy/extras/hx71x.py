@@ -5,7 +5,6 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from klippy.extras.load_cell import hx71x as load_cell_hx71x
 
-
 SENSOR_TYPES = {
     "hx711": load_cell_hx71x.HX711,
     "hx717": load_cell_hx71x.HX717,

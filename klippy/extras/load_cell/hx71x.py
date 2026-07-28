@@ -115,9 +115,10 @@ class HX71xBase(LoadCellSensor):
         self.attach_probe_cmd.send([self.oid, load_cell_probe_oid])
 
     def build_attach_fusion_cmd(self, fusion_oid: int, invert: bool) -> str:
-        return (
-            "hx71x_attach_fusion oid=%d fusion_oid=%d invert=%d"
-            % (self.oid, fusion_oid, int(invert))
+        return "hx71x_attach_fusion oid=%d fusion_oid=%d invert=%d" % (
+            self.oid,
+            fusion_oid,
+            int(invert),
         )
 
     def prepare_sampling(self):

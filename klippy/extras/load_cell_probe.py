@@ -12,8 +12,11 @@ from klippy.printer import Printer, SubsystemComponentCollection
 
 # register sensors that implement LoadCellSensor
 def register_components(subsystem: SubsystemComponentCollection):
-    sensors = (hx71x.HX71X_SENSOR_TYPES | ads1220.ADS1220_SENSOR_TYPE
-               | fusion.LOAD_CELL_FUSION_SENSOR_TYPE)
+    sensors = (
+        hx71x.HX71X_SENSOR_TYPES
+        | ads1220.ADS1220_SENSOR_TYPE
+        | fusion.LOAD_CELL_FUSION_SENSOR_TYPE
+    )
     for name, sensor in sensors.items():
         subsystem.register_component("load_cell_probe_sensors", name, sensor)
     key = "load_cell_probe_tap_classifiers"

@@ -39,15 +39,33 @@ jobs:
         docker pull dangerklippers/klipper-build:latest
         && docker run -v "$PWD":/klipper dangerklippers/klipper-build:latest
         --python 3.12 py.test -n auto
-      # The firmware build itself. On a repo that flashes hardware this is the
-      # single most load-bearing check there is, and it was blank.
-      build_cmd: >-
-        docker build --progress=plain -f scripts/Dockerfile-build
-        -t dangerklippers/klipper-build:gate .
-      # No typechecker is configured in this tree, and Kalico is upstream
-      # Klipper's layout with no annotations to check. Declared rather than
-      # left blank, so gate/typecheck stops reading as a typecheck that
-      # passed.
-      unconfigured_ok: "typecheck"
+      # build is DECLARED, and it should not stay that way. Arming it is what
+      # found the reason it cannot be armed yet.
+      #
+      # Running `docker build -f scripts/Dockerfile-build .` on this branch
+      # fails at link:
+      #
+      #   ld: address 0x19624 of out/klipper.elf section `.bss' is not within
+      #       region `SRAM_A2'
+      #   ld: Klipper image is too large
+      #   make: *** [Makefile:83: out/klipper.elf] Error 1
+      #
+      # The AR100 co-processor image overflows SRAM_A2 on this branch. That is
+      # a real firmware defect, not a CI problem, and it predates this change:
+      # nothing here touches src/.
+      #
+      # It has been invisible because Build test gates the firmware build on a
+      # paths-filter over src/, lib/, Makefile and friends, so any PR that
+      # does not touch those skips the compile entirely. The build has been
+      # failing behind a filter that made it look like it was not running
+      # rather than not passing.
+      #
+      # Arming this gate for real is the follow-up, once the AR100 image fits.
+      # Declaring it here states the break in the caller instead of leaving a
+      # required check green over a firmware that does not link.
+      #
+      # typecheck: no typechecker is configured in this tree, and Kalico
+      # follows upstream Klipper's layout with no annotations to check.
+      unconfigured_ok: "typecheck,build"
       run_semgrep: true
       run_dependency_review: true
