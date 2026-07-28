@@ -87,4 +87,8 @@ jobs:
       # follows upstream Klipper's layout with no annotations to check.
       unconfigured_ok: "typecheck"
       run_semgrep: true
+      # Stated rather than inherited. gate/tell_check is a required context
+      # here, and it had been reporting success while running nothing: the
+      # vendored copy defaulted run_tell_check to false and no caller set it.
+      run_tell_check: true
       run_dependency_review: true
