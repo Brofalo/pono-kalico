@@ -39,52 +39,52 @@ jobs:
         docker pull dangerklippers/klipper-build:latest
         && docker run -v "$PWD":/klipper dangerklippers/klipper-build:latest
         --python 3.12 py.test -n auto
-      # build is still DECLARED, and this comment is the reason it cannot be
-      # armed yet. Arming it is what found the reason.
+      # build is ARMED. It compiles every target in test/configs and then runs
+      # py.test, and nothing about it is gated on which paths a PR touched.
       #
-      # Every link failure is fixed. ar100 overflowed SRAM_A2, and because
-      # ci-build.sh walks test/configs alphabetically under set -e, ar100 was
-      # only the first of six: atmega644p, atmega1280, atmega2560, stm32f031,
-      # stm32f042 and stm32f070 were all failing to link behind it. All of
-      # them build now.
+      # It was declared in unconfigured_ok before this, because arming it found
+      # a firmware that did not build, in four separate ways. Recorded here
+      # because each one was invisible behind the one in front of it:
       #
-      # What still fails is check-software-div.sh, on 30 of the 39 targets,
-      # and it predates all of this. Two independent causes:
+      #   1. ar100 overflowed SRAM_A2, out of sensor_hx711s.c static buffers
+      #      sized for a calibration ceiling the probe path never approaches.
+      #   2. ci-build.sh walks test/configs alphabetically under set -e, and
+      #      ar100 sorts first, so atmega644p, atmega1280, atmega2560,
+      #      stm32f031, stm32f042 and stm32f070 were all failing to link
+      #      behind it, unreported.
+      #   3. load_cell_fusion.c averaged by a variable sensor_count, which
+      #      links __divmodsi4 on a core with no divide instruction.
+      #   4. sensor_hx711s.c rebuilt its high-pass coefficient per sample with
+      #      float division, and did integer division in the trigger path.
       #
-      #   1. sensor_hx711s.c:102 recomputes a high-pass coefficient per sample
-      #      with float division, so __divsf3 links in. Proven sole cause on
-      #      ARM: at32f403 and stm32f405 carry no divide symbols at all with
-      #      CONFIG_WANT_HX711S=n. Fixing it means the host sends the
-      #      coefficient and the MCU only multiplies, which is a protocol
-      #      change to the probe path and wants a bench check on the load cell.
-      #   2. The AVR targets carry __divmodsi4 and __udivmodsi4 with hx711s
-      #      switched off entirely. Nothing to do with the load cell.
+      # All four are fixed, and check-software-div.sh now also catches the
+      # __aeabi_* divide aliases it used to be blind to, so a Cortex-M0 image
+      # can no longer divide in software and still pass.
       #
-      # So the gate goes green only after the divide work, and arming it before
-      # then would block every merge on a defect this change does not own. The
-      # arming is a separate commit, held until the divide work lands. It is
-      # two lines: set build_cmd to
+      # Keep it armed. The state this replaces was a required check that passed
+      # over a firmware nobody had compiled: Build test runs the same compile on
+      # pull_request, but behind a dorny/paths-filter over src/, lib/, Makefile
+      # and friends, so a PR touching none of them skips the compile and reports
+      # green. That is how all four defects above sat behind checks that looked
+      # passing. No paths-filter here, on purpose.
       #
-      #   docker build --progress=plain -f scripts/Dockerfile-build \
-      #     -t dangerklippers/klipper-build:gate .
+      # Cost, measured rather than guessed, because the first two runs of this
+      # gate looked like a budget problem and were not. A whole test/configs
+      # sweep is 2m46s at the -j2 ci-build.sh hardcodes, on 2 cores, and the
+      # job as a whole finished in about 5 minutes. The 30 minute
+      # timeout-minutes on the build job in reusable-ci.yml is not tight.
       #
-      # and drop build from unconfigured_ok.
-      #
-      # Keeping it declared here is not the old hollow state. The old state was
-      # a required check passing over a firmware nobody had compiled; this one
-      # names exactly what fails, and the compile has been run. Build test runs
-      # the same compile on pull_request, but behind a dorny/paths-filter over
-      # src/, lib/, Makefile and friends, so a PR touching none of them skips
-      # it and reports green. That is why this gate carries no paths-filter
-      # once it is armed.
-      #
-      # The image builds every target in test/configs and then runs py.test,
-      # which is also what makes it the slowest gate. If it starts timing out,
-      # raise timeout-minutes on the build job in reusable-ci.yml rather than
-      # narrowing what it compiles.
+      # The two runs that suggested otherwise were both a sick hosted runner:
+      # one could not resolve registry-1.docker.io at all, the next fetched
+      # 31.9MB of apt at 66kB/s and was still going when the timeout killed it.
+      # If this gate fails on a registry or DNS error, re-run it before
+      # touching the timeout or narrowing what it compiles.
       #
       # typecheck: no typechecker is configured in this tree, and Kalico
       # follows upstream Klipper's layout with no annotations to check.
-      unconfigured_ok: "typecheck,build"
+      build_cmd: >-
+        docker build --progress=plain -f scripts/Dockerfile-build
+        -t dangerklippers/klipper-build:gate .
+      unconfigured_ok: "typecheck"
       run_semgrep: true
       run_dependency_review: true
