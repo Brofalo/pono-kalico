@@ -9,6 +9,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include "autoconf.h"   // CONFIG_CLOCK_FREQ
 #include "board/gpio.h"
 #include "sched.h"
 
@@ -35,6 +36,11 @@ struct trsync;
 
 // Math constant
 #define HX711S_PI 3.14159f
+
+// Status report cadence, two seconds in timer ticks. Compile-time constant, so
+// the deadline arithmetic needs no divide. Stays under 2^31 for every supported
+// clock, which is what timer_is_before() requires to compare correctly.
+#define HX711S_HEARTBEAT_TICKS ((uint32_t)(CONFIG_CLOCK_FREQ * 2u))
 
 /****************************************************************
  * Enumerations
@@ -89,7 +95,7 @@ struct hx711s_sensor {
     //   bits 1-2: rollback method (00=linear, 01=backward threshold, 10=forward)
     //   bit 3: slope calculation method
     uint32_t find_index_mode;
-    uint32_t heartbeat_period;      // Heartbeat interval in samples
+    uint32_t next_heartbeat_tick;   // Clock at which the next status report is due
 
     // Probe state
     int32_t probe_check_cmd;
