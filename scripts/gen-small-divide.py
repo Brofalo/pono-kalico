@@ -21,6 +21,7 @@ on the strength of the derivation: scripts/verify-small-divide.c compares the
 result against the native operators for all 2^32 unsigned and all 2^32 signed
 dividends, on every divisor.
 """
+
 import sys
 
 MAXD = 16
@@ -39,7 +40,7 @@ def magicu(d):
     add = 0
     s = p - 32
     if m >= (1 << 32):
-        m -= (1 << 32)
+        m -= 1 << 32
         add = 1
         # the carry fold halves the remaining shift
         s -= 1
@@ -49,24 +50,32 @@ def magicu(d):
 def main():
     extra = [int(a) for a in sys.argv[1:]]
 
-    print("static const struct small_divide_entry "
-          "small_divide_tab[SMALL_DIVIDE_MAX + 1] = {")
+    print(
+        "static const struct small_divide_entry "
+        "small_divide_tab[SMALL_DIVIDE_MAX + 1] = {"
+    )
     print("    {          0u, 0,  0 },  //  0  unused")
     for d in range(1, MAXD + 1):
-        if (d & (d - 1)) == 0:                      # power of two: plain shift
-            print("    {          0u, 0, %2d },  // %2d  shift"
-                  % (d.bit_length() - 1, d))
+        if (d & (d - 1)) == 0:  # power of two: plain shift
+            print(
+                "    {          0u, 0, %2d },  // %2d  shift"
+                % (d.bit_length() - 1, d)
+            )
             continue
         m, add, s = magicu(d)
-        print("    { %10uu, %d, %2d },  // %2d%s"
-              % (m, add, s, d, "  add form" if add else ""))
+        print(
+            "    { %10uu, %d, %2d },  // %2d%s"
+            % (m, add, s, d, "  add form" if add else "")
+        )
     print("};")
 
     for d in extra:
         m, add, s = magicu(d)
         print("\n// divisor %d: m=%u add=%d s=%d" % (d, m, add, s))
-        print("//   q = (uint32_t)(((uint64_t)u * %uu) >> 32)%s >> %d;"
-              % (m, "  [+ carry fold]" if add else "", s))
+        print(
+            "//   q = (uint32_t)(((uint64_t)u * %uu) >> 32)%s >> %d;"
+            % (m, "  [+ carry fold]" if add else "", s)
+        )
 
 
 if __name__ == "__main__":
