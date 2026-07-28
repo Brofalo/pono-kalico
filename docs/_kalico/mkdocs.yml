@@ -160,6 +160,7 @@ nav:
     - TSL1401CL_Filament_Width_Sensor.md
     - Hall_Filament_Width_Sensor.md
     - Load_Cell.md
+    - HX711S_Bench_Check.md
   - Telemetry.md
   - Contact.md
   - Sponsors.md
