@@ -85,25 +85,20 @@ median_filter(int32_t *array, int len)
  ****************************************************************/
 
 static void
-hpf_init(struct hx711s_hpf_params *p, float cutoff_hz, float sample_hz,
-         int32_t base)
+hpf_init(struct hx711s_hpf_params *p, float coeff, int32_t base)
 {
     p->vi = base;
     p->vi_prev = base;
     p->vo = 0;
     p->vo_prev = 0;
-    p->cutoff_frq_hz = cutoff_hz;
-    p->acq_frq_hz = sample_hz;
+    p->coeff = coeff;
 }
 
 static int32_t
 hpf_apply(struct hx711s_hpf_params *p, int32_t input)
 {
-    float rc = 1.0f / (2.0f * HX711S_PI * p->cutoff_frq_hz);
-    float coeff = rc / (rc + 1.0f / p->acq_frq_hz);
-
     p->vi = input;
-    p->vo = (int32_t)((float)(p->vi - p->vi_prev + p->vo_prev) * coeff);
+    p->vo = (int32_t)((float)(p->vi - p->vi_prev + p->vo_prev) * p->coeff);
     p->vo_prev = p->vo;
     p->vi_prev = p->vi;
 
@@ -707,18 +702,24 @@ command_config_hx711s(uint32_t *args)
     memset(h->init_values, 0, sizeof(h->init_values));
     memset(h->sample_values, 0, sizeof(h->sample_values));
 
-    // Initialize high-pass filters
-    float sample_rate = 1000000.0f / h->sample_period / h->hx711_count;
+    // Initialize high-pass filters. The host derives both coefficients from
+    // sample_period and the sensor count and sends their float bit patterns,
+    // so nothing here divides.
+    float sensor_coeff, fusion_coeff;
+    uint32_t sensor_bits = args[9], fusion_bits = args[10];
+    memcpy(&sensor_coeff, &sensor_bits, sizeof(sensor_coeff));
+    memcpy(&fusion_coeff, &fusion_bits, sizeof(fusion_coeff));
     for (int i = 0; i < (int)h->hx711_count; i++)
-        hpf_init(&hpf_params[i], 5.0f, sample_rate, 0);
-    hpf_init(&fusion_hpf_params, 5.0f, 1000000.0f / h->sample_period, 0);
+        hpf_init(&hpf_params[i], sensor_coeff, 0);
+    hpf_init(&fusion_hpf_params, fusion_coeff, 0);
 
     sendf("debug_hx711s oid=%c arg[0]=%u arg[1]=%u arg[2]=%u arg[3]=%u",
           (int)args[0], (int)args[0], (int)args[1], (int)args[2], (int)args[3]);
 }
 DECL_COMMAND(command_config_hx711s,
     "config_hx711s oid=%c hx711_count=%c channels=%u rest_ticks=%u "
-    "kalman_q=%u kalman_r=%u max_th=%u min_th=%u k=%u");
+    "kalman_q=%u kalman_r=%u max_th=%u min_th=%u k=%u "
+    "hpf_coeff=%u hpf_fusion_coeff=%u");
 
 void
 command_add_hx711s(uint32_t *args)
