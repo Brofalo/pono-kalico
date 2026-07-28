@@ -177,7 +177,35 @@ load_cell_fusion_process_group(struct load_cell_fusion *lcf)
     int32_t sum = 0;
     for (i = 0; i < lcf->sensor_count; i++)
         sum += lcf->sensors[i].direction * lcf->sensors[i].last_sample;
-    int32_t fused = sum / lcf->sensor_count;
+    // Average without a run-time divide. Several targets have no divide
+    // instruction, so dividing by a variable links __divmodsi4 on AVR or
+    // __divsi3 on Cortex-M0, and scripts/check-software-div.sh rejects the
+    // image. sensor_count is 1 to MAX_FUSION_SENSORS here: add_sensor shuts
+    // down above the cap, query shuts down on zero, and this function has
+    // already returned unless the group is active.
+    //
+    // Switching folds every divisor to a constant. gcc emits 1, 2 and 4
+    // inline but still calls libgcc for 3, so that case uses the multiply
+    // form instead: the high half of sum * 0x55555556 floors the quotient,
+    // and adding the sign bit turns floor back into C's truncate-toward-zero.
+    // Checked equal to sum / 3 for all 2^32 int32 inputs, so the fused value
+    // is unchanged for every case.
+    int32_t fused;
+    switch (lcf->sensor_count) {
+    case 2:
+        fused = sum / 2;
+        break;
+    case 3:
+        fused = (int32_t)(((int64_t)sum * 0x55555556LL) >> 32)
+                + (int32_t)((uint32_t)sum >> 31);
+        break;
+    case 4:
+        fused = sum / 4;
+        break;
+    default:  // a single sensor; count is never zero here
+        fused = sum;
+        break;
+    }
     add_sample(&lcf->sb, lcf->oid, (uint32_t)fused);
     if (lcf->lce)
         load_cell_probe_report_sample(lcf->lce, fused);
