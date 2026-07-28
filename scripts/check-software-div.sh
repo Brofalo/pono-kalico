@@ -5,30 +5,26 @@ CFGFILE="$1"
 ELFOBJ="$2"
 OBJDUMP=objdump
 
-# The historical pattern. It matches the libgcc internal names (__divsf3,
-# __divsi3, __udivmodsi4) but NOT the EABI aliases, because \< anchors at the
-# start of the word and '_' is a word character, so the '_' in '__aeabi_fdiv'
-# breaks the [a-z0-9]* run before it can reach 'div'.
-DIV_RE='\<(__[a-z0-9]*div|__[a-z0-9]*mod)'
-
-# Same helpers under their EABI names. On Cortex-M0 a soft-float divide links
-# only __aeabi_fdiv, with no __divsf3 alias, so the pattern above sees nothing
-# and the check passes while the image still divides in software. Reported
-# separately rather than failed on, so that turning it into an error is a
-# deliberate step and not a surprise.
+# Every libgcc divide or modulo helper, under both its internal name and its
+# EABI alias. The two patterns are separate because one cannot cover both:
+#
+#   __divsf3, __divsi3, __udivmodsi4   start with __ then run straight into div
+#   __aeabi_fdiv, __aeabi_uidiv        have an underscore in the way, and \< can
+#                                      only anchor at the start of the word
+#
+# The second pattern is not cosmetic. On Cortex-M0 a soft-float divide links
+# __aeabi_fdiv with no __divsf3 alias at all, so for as long as only the first
+# pattern existed, stm32F072, stm32f070 and stm32g0b1 passed this check while
+# dividing in software once per load cell sample.
+#
+# __aeabi_idiv0 and __aeabi_ldiv0 are excluded on purpose: they are the
+# divide-by-zero trap handlers, always linked, and they never divide.
+DIV_RE='\<(__[a-z0-9]*div|__[a-z0-9]*mod)[a-z0-9_]*'
 AEABI_RE='__aeabi_[a-z0-9]*(div|mod)[a-z0-9]*'
 
-FOUND=$(objdump -t ${ELFOBJ} | grep -Eo "${DIV_RE}[a-z0-9_]*" | sort -u)
-AEABI=$(objdump -t ${ELFOBJ} | grep -Eo "${AEABI_RE}" | sort -u \
-        | grep -vE '_(idiv0|ldiv0)$')
-
-if [ -n "${AEABI}" ] && [ -z "${FOUND}" ]; then
-    echo ""
-    echo "NOTE: no libgcc divide symbol matched, but these EABI divide helpers"
-    echo "are linked and the pattern above cannot see them:"
-    echo "${AEABI}" | sed 's/^/    /'
-    echo ""
-fi
+FOUND=$( { objdump -t ${ELFOBJ} | grep -Eo "${DIV_RE}" ;
+           objdump -t ${ELFOBJ} | grep -Eo "${AEABI_RE}" ; } \
+         | grep -vE '^__aeabi_(idiv0|ldiv0)$' | sort -u )
 
 if [ -n "${FOUND}" ]; then
 
