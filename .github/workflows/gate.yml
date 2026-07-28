@@ -7,8 +7,47 @@ permissions:
   contents: read
 jobs:
   gate:
+    # Local, not PONOdata/gatekeeper: this repo is public and gatekeeper is
+    # private, and a public repo cannot call a private repo's reusable
+    # workflow. The local copy is the workaround, not drift.
     uses: ./.github/workflows/reusable-ci.yml
     with:
+      runner_labels: '["ubuntu-latest"]'
+      # Every command here was blank, so gate/lint, gate/typecheck, gate/test
+      # and gate/build were required while running nothing. This is printer
+      # firmware: the thing these checks guard moves a heated nozzle over a
+      # bed, and the required checks in front of it verified nothing.
+      #
+      # Ruff, Build test and Docs test already run all of this on pull_request
+      # and are green. None of them is a required check, so any of them could
+      # go red and the PR would still merge. These are the same commands,
+      # wired into the gate that merge protection actually enforces.
+      #
+      # ruff is capped below 0.16 to match the pyproject dev group. The
+      # comment on that pin is explicit: 0.16 expanded the default rule set
+      # and takes this tree from 2 errors to 2222. Raise it deliberately.
+      lint_cmd: >-
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        && export PATH="$HOME/.local/bin:$PATH"
+        && uv tool run --from "ruff>=0.9.3,<0.16" ruff check .
+        && uv tool run --from "ruff>=0.9.3,<0.16" ruff format --check .
+      # One interpreter, not the six the Build test matrix runs. That matrix
+      # still runs on every PR and keeps the version spread covered; this is
+      # the copy that has to be green before a merge is allowed, so it is
+      # sized to be fast enough that nobody wants to bypass it.
+      test_cmd: >-
+        docker pull dangerklippers/klipper-build:latest
+        && docker run -v "$PWD":/klipper dangerklippers/klipper-build:latest
+        --python 3.12 py.test -n auto
+      # The firmware build itself. On a repo that flashes hardware this is the
+      # single most load-bearing check there is, and it was blank.
+      build_cmd: >-
+        docker build --progress=plain -f scripts/Dockerfile-build
+        -t dangerklippers/klipper-build:gate .
+      # No typechecker is configured in this tree, and Kalico is upstream
+      # Klipper's layout with no annotations to check. Declared rather than
+      # left blank, so gate/typecheck stops reading as a typecheck that
+      # passed.
+      unconfigured_ok: "typecheck"
       run_semgrep: true
       run_dependency_review: true
-      runner_labels: '["ubuntu-latest"]'
