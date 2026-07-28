@@ -62,23 +62,22 @@ bubble_sort(int32_t *array, int len)
     }
 }
 
-// Median filter for calibration
+// Median filter for calibration. Sorts the caller's array in place: the one
+// caller drops the samples immediately afterwards, so the scratch copy this
+// used to keep was a second buffer of HX711S_MAX_CAL_SAMPLES for no gain.
 static int32_t
 median_filter(int32_t *array, int len)
 {
-    static int32_t sorted[HX711S_MAX_CAL_SAMPLES];
-
     if (len > HX711S_MAX_CAL_SAMPLES)
         len = HX711S_MAX_CAL_SAMPLES;
     if (len < 1)
         return 0;
-    memcpy(sorted, array, len * sizeof(int32_t));
-    bubble_sort(sorted, len);
+    bubble_sort(array, len);
 
     if (len & 1)
-        return sorted[len / 2];
+        return array[len / 2];
     else
-        return (sorted[len / 2 - 1] + sorted[len / 2]) / 2;
+        return (array[len / 2 - 1] + array[len / 2]) / 2;
 }
 
 /****************************************************************
@@ -257,10 +256,10 @@ hx711s_read_sensor(struct hx711s_sensor *h, uint8_t sensor_idx)
 static uint8_t
 calibration_collect(struct hx711s_sensor *h, uint8_t sensor_idx)
 {
-    static int32_t sample_count[4] = {0};
-    static int32_t samples[4][HX711S_MAX_CAL_SAMPLES];
-    static int32_t sensor_min[4] = {0};
-    static int32_t sensor_max[4] = {0};
+    static int32_t sample_count[HX711S_MAX_SENSORS] = {0};
+    static int32_t samples[HX711S_MAX_SENSORS][HX711S_MAX_CAL_SAMPLES];
+    static int32_t sensor_min[HX711S_MAX_SENSORS] = {0};
+    static int32_t sensor_max[HX711S_MAX_SENSORS] = {0};
 
     // Calibration complete
     if (h->times_read == 0) {

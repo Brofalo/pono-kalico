@@ -23,8 +23,13 @@ struct trsync;
 #define HX711S_MAX_SENSOR_NUM   5
 // Maximum sliding window data points
 #define HX711S_MAX_DATA_NUM     16
-// Maximum calibration samples per sensor
-#define HX711S_MAX_CAL_SAMPLES  1000
+// Maximum calibration samples per sensor. This sizes a static buffer of
+// HX711S_MAX_SENSORS * HX711S_MAX_CAL_SAMPLES * 4 bytes, so it is the single
+// largest term in the driver's memory footprint. The probe path asks for 30
+// (see calibration_start in klippy/extras/hx711s.py); the ceiling only bounds
+// the manual HX711S_CALIBRATE gcode. Keep it in step with that command's
+// maxval, and note that calibration_collect sorts in place at O(n^2).
+#define HX711S_MAX_CAL_SAMPLES  128
 // Maximum sensors per device
 #define HX711S_MAX_SENSORS      4
 
