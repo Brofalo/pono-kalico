@@ -13,6 +13,7 @@
 #include "sched.h"
 #include "trsync.h"  // trsync_do_trigger
 #include "sensor_hx711s.h"
+#include "small_divide.h"
 #include <string.h>
 
 /****************************************************************
@@ -168,7 +169,8 @@ sliding_window_avg_exception_filter(int index, int max_data_num,
         sw_data_count[index]++;
         for (int i = 0; i < sw_data_count[index]; i++)
             sum += data_list[index][i];
-        out = sum / sw_data_count[index];
+        // 1 to max_data_num, which command_config_hx711s sets to 12 or 16
+        out = sdiv_small(sum, sw_data_count[index]);
     } else {
         // Sort and trim extremes
         int32_t sorted[HX711S_MAX_DATA_NUM];
@@ -178,7 +180,8 @@ sliding_window_avg_exception_filter(int index, int max_data_num,
         int start = (max_data_num - window_data_num) / 2;
         for (int i = start; i < start + window_data_num; i++)
             sum += sorted[i];
-        out = sum / window_data_num;
+        // both callers pass max_data_num - 2, so 10 or 14
+        out = sdiv_small(sum, window_data_num);
     }
 
     if (out == 0)
@@ -194,12 +197,20 @@ sliding_window_avg_exception_filter(int index, int max_data_num,
 
 #define HX711S_MIN_PULSE_NS 200
 
+// Pulse width in timer ticks, rounded up, never below one. Both operands are
+// compile-time constants, so this folds to a literal. Deriving it at run time
+// through timer_from_us() needed a divide by 1000000, and Cortex-M0 and AVR
+// have no divide instruction, so that pulled a libgcc helper into the image.
+#define HX711S_PULSE_TICKS_RAW                                          \
+    (((uint64_t)HX711S_MIN_PULSE_NS * CONFIG_CLOCK_FREQ + 999999999u)   \
+     / 1000000000u)
+#define HX711S_PULSE_TICKS                                              \
+    ((uint32_t)(HX711S_PULSE_TICKS_RAW < 1u ? 1u : HX711S_PULSE_TICKS_RAW))
+
 static inline void
-hx711s_delay_ns(uint32_t ns)
+hx711s_delay_pulse(void)
 {
-    uint32_t ticks = timer_from_us(ns * 1000) / 1000000;
-    if (ticks < 1) ticks = 1;
-    uint32_t end = timer_read_time() + ticks;
+    uint32_t end = timer_read_time() + HX711S_PULSE_TICKS;
     while (timer_is_before(timer_read_time(), end))
         ;
 }
@@ -219,18 +230,18 @@ hx711s_read_sensor(struct hx711s_sensor *h, uint8_t sensor_idx)
     for (int i = 0; i < 24; i++) {
         irq_disable();
         gpio_out_write(h->clks[sensor_idx], 1);
-        hx711s_delay_ns(HX711S_MIN_PULSE_NS);
+        hx711s_delay_pulse();
         gpio_out_write(h->clks[sensor_idx], 0);
         if (gpio_in_read(h->sdos[sensor_idx]))
             value |= 1 << (23 - i);
         irq_enable();
-        hx711s_delay_ns(HX711S_MIN_PULSE_NS);
+        hx711s_delay_pulse();
     }
 
     // Extra clock pulse to set gain for next conversion
     irq_disable();
     gpio_out_write(h->clks[sensor_idx], 1);
-    hx711s_delay_ns(HX711S_MIN_PULSE_NS);
+    hx711s_delay_pulse();
     gpio_out_write(h->clks[sensor_idx], 0);
     irq_enable();
 
@@ -403,13 +414,16 @@ find_trigger_index_new(int32_t *array, struct hx711s_sensor *h)
     }
 
     // Linear regression + slope fallback
-    int32_t kk = (val[max_num - 1] - val[out_index]) / (max_num - out_index);
+    // out_index comes from the loop above, so it is 0 to max_num - 1 and the
+    // divisor is 1 to max_num
+    int32_t kk = sdiv_small(val[max_num - 1] - val[out_index],
+                            max_num - out_index);
 
     // Calculate slope for compensation
     int32_t fix_out_index = 0;
     if (h->find_index_mode & 0x08) {
         // Fixed pattern slope calculation
-        fix_out_index = kk*k_slope / 10000 - bias_slope / 10;
+        fix_out_index = sdiv_10000(kk * k_slope) - sdiv_small(bias_slope, 10);
     } else {
         if (kk > 2300) {
           fix_out_index = 11;
@@ -507,7 +521,7 @@ check_trigger(int32_t *data, struct hx711s_sensor *h)
         int32_t avg = 0;
         for (int i = 0; i < max_num; i++)
             avg += data[i];
-        avg /= max_num;
+        avg = sdiv_small(avg, max_num);
         if (avg < -h->min_th)
             return 0x60;
     }
@@ -686,7 +700,12 @@ command_config_hx711s(uint32_t *args)
     h->enable_channels = args[2] & 0xFF;
     h->enable_hpf = (args[2] & 0x0F00) >> 8;
     h->enable_shake_filter = (args[2] & 0xF0000) >> 16;
-    h->heartbeat_period = 2000000 / h->sample_period;
+    // Report on a clock deadline rather than every 2000000/sample_period
+    // samples. Same two second cadence, but the sample count needed a divide
+    // by a run-time value, which Cortex-M0 and AVR cannot do without a libgcc
+    // helper. Zero makes the first pass report immediately, as counting from
+    // loop 0 did.
+    h->next_heartbeat_tick = 0;
 
     h->kalman_q[0] = args[4];
     h->kalman_r[0] = args[5];
@@ -914,7 +933,12 @@ hx711s_task(void)
         }
 
         // Report heartbeat or trigger
-        if ((loop % h->heartbeat_period) == 0 ||
+        uint8_t heartbeat_due = !timer_is_before(now_tick,
+                                                 h->next_heartbeat_tick);
+        if (heartbeat_due)
+            h->next_heartbeat_tick = now_tick + HX711S_HEARTBEAT_TICKS;
+
+        if (heartbeat_due ||
             was_triggered != is_triggered ||
             last_is_calibration != h->is_calibration) {
 
