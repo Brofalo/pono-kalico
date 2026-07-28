@@ -39,30 +39,49 @@ jobs:
         docker pull dangerklippers/klipper-build:latest
         && docker run -v "$PWD":/klipper dangerklippers/klipper-build:latest
         --python 3.12 py.test -n auto
-      # build is DECLARED, and it should not stay that way. Arming it is what
-      # found the reason it cannot be armed yet.
+      # build is still DECLARED, and this comment is the reason it cannot be
+      # armed yet. Arming it is what found the reason.
       #
-      # Running `docker build -f scripts/Dockerfile-build .` on this branch
-      # fails at link:
+      # Every link failure is fixed. ar100 overflowed SRAM_A2, and because
+      # ci-build.sh walks test/configs alphabetically under set -e, ar100 was
+      # only the first of six: atmega644p, atmega1280, atmega2560, stm32f031,
+      # stm32f042 and stm32f070 were all failing to link behind it. All of
+      # them build now.
       #
-      #   ld: address 0x19624 of out/klipper.elf section `.bss' is not within
-      #       region `SRAM_A2'
-      #   ld: Klipper image is too large
-      #   make: *** [Makefile:83: out/klipper.elf] Error 1
+      # What still fails is check-software-div.sh, on 30 of the 39 targets,
+      # and it predates all of this. Two independent causes:
       #
-      # The AR100 co-processor image overflows SRAM_A2 on this branch. That is
-      # a real firmware defect, not a CI problem, and it predates this change:
-      # nothing here touches src/.
+      #   1. sensor_hx711s.c:102 recomputes a high-pass coefficient per sample
+      #      with float division, so __divsf3 links in. Proven sole cause on
+      #      ARM: at32f403 and stm32f405 carry no divide symbols at all with
+      #      CONFIG_WANT_HX711S=n. Fixing it means the host sends the
+      #      coefficient and the MCU only multiplies, which is a protocol
+      #      change to the probe path and wants a bench check on the load cell.
+      #   2. The AVR targets carry __divmodsi4 and __udivmodsi4 with hx711s
+      #      switched off entirely. Nothing to do with the load cell.
       #
-      # It has been invisible because Build test gates the firmware build on a
-      # paths-filter over src/, lib/, Makefile and friends, so any PR that
-      # does not touch those skips the compile entirely. The build has been
-      # failing behind a filter that made it look like it was not running
-      # rather than not passing.
+      # So the gate goes green only after the divide work, and arming it before
+      # then would block every merge on a defect this change does not own. The
+      # arming is a separate commit, held until the divide work lands. It is
+      # two lines: set build_cmd to
       #
-      # Arming this gate for real is the follow-up, once the AR100 image fits.
-      # Declaring it here states the break in the caller instead of leaving a
-      # required check green over a firmware that does not link.
+      #   docker build --progress=plain -f scripts/Dockerfile-build \
+      #     -t dangerklippers/klipper-build:gate .
+      #
+      # and drop build from unconfigured_ok.
+      #
+      # Keeping it declared here is not the old hollow state. The old state was
+      # a required check passing over a firmware nobody had compiled; this one
+      # names exactly what fails, and the compile has been run. Build test runs
+      # the same compile on pull_request, but behind a dorny/paths-filter over
+      # src/, lib/, Makefile and friends, so a PR touching none of them skips
+      # it and reports green. That is why this gate carries no paths-filter
+      # once it is armed.
+      #
+      # The image builds every target in test/configs and then runs py.test,
+      # which is also what makes it the slowest gate. If it starts timing out,
+      # raise timeout-minutes on the build job in reusable-ci.yml rather than
+      # narrowing what it compiles.
       #
       # typecheck: no typechecker is configured in this tree, and Kalico
       # follows upstream Klipper's layout with no annotations to check.

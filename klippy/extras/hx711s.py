@@ -373,7 +373,10 @@ class HX711S:
 
     # GCode commands
     def cmd_HX711S_CALIBRATE(self, gcmd):
-        samples = gcmd.get_int("SAMPLES", 30, minval=5, maxval=1000)
+        # maxval tracks HX711S_MAX_CAL_SAMPLES in src/sensor_hx711s.h. The MCU
+        # clamps anything above it, so a higher bound here would just promise
+        # a sample count the firmware silently refuses.
+        samples = gcmd.get_int("SAMPLES", 30, minval=5, maxval=128)
         timeout = gcmd.get_float("TIMEOUT", 5.0, minval=1.0, maxval=30.0)
         gcmd.respond_info("HX711S: Calibrating with %d samples..." % samples)
         if self.calibration_start(samples, timeout):
