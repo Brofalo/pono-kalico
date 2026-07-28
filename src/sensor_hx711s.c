@@ -16,6 +16,16 @@
 #include "small_divide.h"
 #include <string.h>
 
+// Every divisor this file hands to sdiv_small() is a sliding-window count, so it
+// is bounded by HX711S_MAX_DATA_NUM: the window fill count at :173, the trimmed
+// window at :184, max_num - out_index at :419, and max_num at :524. The two
+// constants are currently equal, so any increase to the window size would read
+// past the reciprocal table on the probe hot path and scale the filter output by
+// whatever follows it in .rodata. Fail the build instead.
+_Static_assert(HX711S_MAX_DATA_NUM <= SMALL_DIVIDE_MAX,
+               "sliding-window divisors can exceed the small_divide table: "
+               "extend the table before raising HX711S_MAX_DATA_NUM");
+
 /****************************************************************
  * Module State
  ****************************************************************/

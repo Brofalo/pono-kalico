@@ -22,11 +22,25 @@
 // compares them against the native operators for every one of the 2^32 unsigned
 // and 2^32 signed dividends, on every divisor in range.
 //
-// A divisor outside 1..SMALL_DIVIDE_MAX reads past the table, so the caller
-// must bound it. Every current caller divides by a sliding-window or sensor
-// count that is fixed at config time and capped well below the limit.
+// A divisor outside 1..SMALL_DIVIDE_MAX reads past the table, so the caller must
+// bound it. Every current caller divides by a sliding-window count fixed at
+// config time, and that count's cap sits EXACTLY on this limit, not below it:
+// HX711S_MAX_DATA_NUM is 16 and so is SMALL_DIVIDE_MAX. There is no margin. So
+// each caller asserts its own bound at compile time rather than trusting this
+// paragraph, and a new caller owes the same assert. An out-of-range divisor
+// reads adjacent memory as a reciprocal and scales the filter output by it,
+// silently, on the probe hot path.
 
 #define SMALL_DIVIDE_MAX 16
+
+// Raising SMALL_DIVIDE_MAX without extending the table leaves the new entries
+// zeroed, and a zeroed entry reads as "power of two, shift zero", so udiv_small
+// returns the dividend undivided. A wrong answer, not a crash, which is worse.
+// Regenerate with scripts/gen-small-divide.py and re-run
+// scripts/verify-small-divide.c before moving this number.
+_Static_assert(SMALL_DIVIDE_MAX == 16,
+               "small_divide_tab covers 1..16: regenerate and re-verify the "
+               "table before raising SMALL_DIVIDE_MAX");
 
 struct small_divide_entry {
     uint32_t m;         // reciprocal; zero means the divisor is a power of two
