@@ -1,0 +1,42 @@
+# Ruff config lives HERE, not in pyproject.toml, deliberately.
+#
+# Any pyproject.toml edit invalidates uv's lock manifest hash, which makes the
+# build gate's `uv export --frozen` diff-check fail, which forces a lock+export
+# update, which declares pytest to dependency-review, which blocks on
+# GHSA-6w46-j5rx-g56g, which cannot be fixed because pytest's 9.0.3 fix needs
+# Python >= 3.10 while this fork supports >= 3.9. A lint-config change should not
+# have to walk into that, so it lives in a file uv never reads.
+#
+# `select` is PINNED. Without it this config inherited ruff's DEFAULT rules, an
+# unstable contract across releases: ruff 0.16 widened the defaults and lit up
+# hundreds of findings in klippy/, vendored upstream Klipper we do not diverge
+# from. These four are exactly ruff's historical defaults, so behaviour is
+# unchanged, but no future ruff release can add rules without a commit saying so.
+line-length = 80
+indent-width = 4
+exclude = ["./.github", "./.history", "./config", "./docs", "./lib", "./src"]
+
+[lint]
+# Pin the rule set EXPLICITLY. Without `select`, this config inherits ruff's
+# DEFAULT rules, which is an unstable contract: ruff 0.16 widened the defaults
+# and lit up hundreds of findings in klippy/, which is vendored upstream Klipper
+# code we deliberately do not diverge from. These four are exactly ruff's
+# historical defaults (E4, E7, E9, F), so behaviour is unchanged, but a future
+# ruff release can no longer add rules to this repo without a commit saying so.
+select = ["E4", "E7", "E9", "F"]
+extend-select = [
+  "B006",  # Checks for uses of mutable objects as function argument defaults
+  "FA100", # Detect when type annotations could be made better with PEP563
+  "FA102", # Detect type annotations that would require `from __future__ import annotations`
+  "I001",  # unsorted-imports: Import block is un-sorted or un-formatted
+  "I002",  # missing-required-import: Missing required import: {name}"
+]
+ignore = [
+  "C901", # Function is too complex
+  "E501", # Line too long (82 > 79 characters)
+  "E302", # Expected 2 blank lines, found 0
+  "E722", # Do not use bare except, specify exception instead
+  "E741", # Do not use variables named 'I', 'O', or 'l'
+  "F841", # Local variable name is assigned to but never used
+  "E721", # Do not compare types, use 'isinstance()'
+]
