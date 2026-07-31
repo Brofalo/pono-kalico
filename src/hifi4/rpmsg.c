@@ -300,7 +300,13 @@ int rpmsg_send(struct rpmsg_endpoint *ept, uint32_t dst,
     hdr->len = len;
     hdr->flags = 0;
 
-    memcpy((void *)hdr + sizeof(*hdr), data, len);
+    // hdr + 1 is the payload: it advances exactly one rpmsg_hdr. The old form
+    // was `(void *)hdr + sizeof(*hdr)`, which relies on GCC's extension of
+    // byte arithmetic on void*. It computed the right address, but it is
+    // non-standard and reads as though it might be scaling by the struct size
+    // twice, which is what CodeQL's cpp/suspicious-pointer-scaling-void (CWE-468)
+    // objects to. Same address, standard C, one obvious reading.
+    memcpy(hdr + 1, data, len);
 
     mb();
 
@@ -392,7 +398,7 @@ int rpmsg_process(void)
 
             // Dispatch to the endpoint's callback
             if (ept->cb) {
-                ept->cb(hdr->src, (void *)hdr + sizeof(*hdr), payload_len);
+                ept->cb(hdr->src, hdr + 1, payload_len);  // hdr + 1 = payload
             }
         } else {
             lprintf("rpmsg: no endpoint for dst=%lu (from src=%lu)\n",
