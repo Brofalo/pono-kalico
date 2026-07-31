@@ -89,7 +89,54 @@ static int vring_get_avail(struct vring *vr, uint16_t *last_avail_idx)
     uint16_t desc_idx = vr->avail->ring[*last_avail_idx % vr->num];
     (*last_avail_idx)++;
 
+    // desc_idx was just read out of shared memory that the host writes, so it
+    // is not ours to trust. Indexing vr->desc[] with it unchecked reads a
+    // descriptor from outside the table (up to 65535 entries past it) and then
+    // dereferences whatever address happens to sit there. Validating the index
+    // is the device's job under the virtio spec, not the driver's.
+    //
+    // The entry is already consumed, so returning -1 drops this one buffer and
+    // stops the caller's loop rather than spinning on it. Losing a buffer to a
+    // corrupt ring beats acting on a descriptor we cannot locate.
+    if (desc_idx >= vr->num) {
+        lprintf("rpmsg: desc idx %u out of range (num=%lu), dropping\n",
+                (unsigned)desc_idx, (unsigned long)vr->num);
+        return -1;
+    }
+
     return desc_idx;
+}
+
+/*
+ * Resolve a descriptor to an rpmsg header pointer, or NULL if the descriptor
+ * is not usable.
+ *
+ * Both addr and len come from shared memory. The old code cast desc->addr
+ * straight to a pointer and wrote through it, which on the TX path is an
+ * arbitrary write of up to RPMSG_DATA_SIZE bytes to an address the host picks.
+ * Under a threat model where Linux is trusted that is a robustness hole; if
+ * Linux is ever untrusted it is a clean path into the DSP. The checks are a
+ * handful of instructions either way.
+ */
+static struct rpmsg_hdr *vring_desc_hdr(const struct vring_desc *desc)
+{
+    // addr is 64-bit in the ring but this core is 32-bit, so the cast below
+    // truncates. An address with anything in the high word is not reachable
+    // here and would silently land somewhere unrelated.
+    if (desc->addr == 0 || (desc->addr >> 32) != 0)
+        return NULL;
+
+    // struct rpmsg_hdr is 32-bit fields; an unaligned base would fault or
+    // read torn values on Xtensa.
+    if ((desc->addr & 0x3) != 0)
+        return NULL;
+
+    // The buffer has to be big enough to hold a header and no bigger than the
+    // buffer size both sides agreed on.
+    if (desc->len < sizeof(struct rpmsg_hdr) || desc->len > RPMSG_BUF_SIZE)
+        return NULL;
+
+    return (struct rpmsg_hdr *)(uint32_t)desc->addr;
 }
 
 /*
@@ -224,9 +271,28 @@ int rpmsg_send(struct rpmsg_endpoint *ept, uint32_t dst,
 
     struct vring_desc *desc = &tx_vring.desc[desc_idx];
 
-    // The descriptor points to a buffer in shared memory.
-    // Write our RPMsg message into it.
-    struct rpmsg_hdr *hdr = (struct rpmsg_hdr *)(uint32_t)desc->addr;
+    // The descriptor points to a buffer in shared memory. Validate it before
+    // writing through it: everything below this line is a write.
+    struct rpmsg_hdr *hdr = vring_desc_hdr(desc);
+    if (!hdr) {
+        lprintf("rpmsg: TX descriptor %u unusable (addr=0x%08lx len=%lu)\n",
+                (unsigned)desc_idx, (unsigned long)(uint32_t)desc->addr,
+                (unsigned long)desc->len);
+        // Hand the buffer back so the host can recycle it. The index itself is
+        // in range; only its contents were bad.
+        vring_put_used(&tx_vring, desc_idx, 0);
+        return -4;
+    }
+
+    // The host may have offered a buffer smaller than RPMSG_BUF_SIZE, so check
+    // this message against what the descriptor actually covers, not just
+    // against the compile-time maximum checked above.
+    if (len > desc->len - sizeof(*hdr)) {
+        lprintf("rpmsg: TX message %lu too big for buffer %lu\n",
+                (unsigned long)len, (unsigned long)desc->len);
+        vring_put_used(&tx_vring, desc_idx, 0);
+        return -2;
+    }
 
     hdr->src = ept->addr;
     hdr->dst = dst;
@@ -294,7 +360,28 @@ int rpmsg_process(void)
             break;
 
         struct vring_desc *desc = &rx_vring.desc[desc_idx];
-        struct rpmsg_hdr *hdr = (struct rpmsg_hdr *)(uint32_t)desc->addr;
+        struct rpmsg_hdr *hdr = vring_desc_hdr(desc);
+        if (!hdr) {
+            lprintf("rpmsg: RX descriptor %u unusable (addr=0x%08lx len=%lu)\n",
+                    (unsigned)desc_idx, (unsigned long)(uint32_t)desc->addr,
+                    (unsigned long)desc->len);
+            vring_put_used(&rx_vring, desc_idx, 0);
+            processed++;
+            continue;
+        }
+
+        // hdr->len is the host's claim about the payload size. Bound it by what
+        // the descriptor actually covers before handing a pointer and a length
+        // to a callback, so a bad length cannot walk off the end of the buffer.
+        // com.c's callback clamps against its own receive buffer today, but the
+        // bound belongs here: the next endpoint added may not clamp.
+        uint32_t max_payload = (uint32_t)(desc->len - sizeof(*hdr));
+        if (max_payload > RPMSG_DATA_SIZE)
+            max_payload = RPMSG_DATA_SIZE;
+        uint32_t payload_len = hdr->len > max_payload ? max_payload : hdr->len;
+        if (payload_len != hdr->len)
+            lprintf("rpmsg: RX payload len %lu clamped to %lu\n",
+                    (unsigned long)hdr->len, (unsigned long)payload_len);
 
         // Find the endpoint this message is addressed to
         struct rpmsg_endpoint *ept = find_endpoint(hdr->dst);
@@ -305,7 +392,7 @@ int rpmsg_process(void)
 
             // Dispatch to the endpoint's callback
             if (ept->cb) {
-                ept->cb(hdr->src, (void *)hdr + sizeof(*hdr), hdr->len);
+                ept->cb(hdr->src, (void *)hdr + sizeof(*hdr), payload_len);
             }
         } else {
             lprintf("rpmsg: no endpoint for dst=%lu (from src=%lu)\n",
