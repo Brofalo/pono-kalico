@@ -1,986 +1,394 @@
-// HX711S strain gauge sensor support for bed probing
+// Support for multi-sensor HX711 and HX717 ADC chips
 //
-// Copyright (C) 2026 Timo V
+// Copyright (C) 2026 James Turton <james.turton@gmx.com>
+// Original HX711 driver Copyright (C) 2024 Gareth Farrington <gareth@waves.ky>
 //
 // This file may be distributed under the terms of the GNU GPLv3 license.
 
-#include "autoconf.h"
-#include "basecmd.h"
-#include "board/gpio.h"
-#include "board/irq.h"
-#include "board/misc.h"
-#include "command.h"
-#include "sched.h"
-#include "trsync.h"  // trsync_do_trigger
-#include "sensor_hx711s.h"
-#include "small_divide.h"
-#include <string.h>
+#include "autoconf.h" // CONFIG_MACH_AVR
+#include "board/gpio.h" // gpio_out_write
+#include "board/irq.h" // irq_poll
+#include "board/misc.h" // timer_read_time
+#include "basecmd.h" // oid_alloc
+#include "command.h" // DECL_COMMAND
+#include "sched.h" // sched_add_timer
+#include "sensor_bulk.h" // sensor_bulk_report
+#include "load_cell_probe.h" // load_cell_probe_report_sample
+#include <stdbool.h>
+#include <stdint.h>
 
-// Every divisor this file hands to sdiv_small() is a sliding-window count, so it
-// is bounded by HX711S_MAX_DATA_NUM: the window fill count at :173, the trimmed
-// window at :184, max_num - out_index at :419, and max_num at :524. The two
-// constants are currently equal, so any increase to the window size would read
-// past the reciprocal table on the probe hot path and scale the filter output by
-// whatever follows it in .rodata. Fail the build instead.
-_Static_assert(HX711S_MAX_DATA_NUM <= SMALL_DIVIDE_MAX,
-               "sliding-window divisors can exceed the small_divide table: "
-               "extend the table before raising HX711S_MAX_DATA_NUM");
+#define MAX_SENSORS 4
+
+struct hx711s_adc;
+
+// Each chip runs its own read state machine. The chips free-run on their
+// own oscillators with no way to synchronise them, so a chip is polled and
+// read on its own data ready edge and never waits on a sibling. Reading a
+// chip only when every chip is ready would leave the earliest one holding
+// its result until the drift between oscillators pushed that wait onto its
+// next conversion, tearing the frame being clocked out.
+struct hx711s_chip {
+    struct timer timer;
+    struct hx711s_adc *adc; // the sensor this chip belongs to
+    struct gpio_in dout; // pin used to receive data from the hx711s
+    struct gpio_out sclk; // pin used to generate clock for the hx711s
+    int32_t counts; // most recent reading, held until the chip is read again
+    uint32_t counts_ticks; // when counts was last refreshed
+    uint8_t index;
+    uint8_t flags;
+    uint8_t settle_remaining; // conversions still to discard after a wake
+};
+
+struct hx711s_adc {
+    uint8_t gain_channel;   // the gain+channel selection (1-4)
+    uint8_t sensor_count;   // number of chips in use (1-4)
+    uint8_t sample_bytes;   // bytes in one multi-channel sample
+    uint8_t chip_mask;      // bit per configured chip
+    uint8_t have_counts;    // chips that have produced a reading
+    uint32_t rest_ticks;
+    uint32_t last_error;
+    struct hx711s_chip chips[MAX_SENSORS];
+    struct sensor_bulk sb;
+    struct load_cell_probe *lce;
+};
+
+enum {
+    HX_PENDING = 1<<0, HX_OVERFLOW = 1<<1,
+};
+
+#define BYTES_PER_SAMPLE 4
+#define SETTLE_CONVERSIONS 4
+#define STALE_CONVERSIONS 3
+#define SAMPLE_ERROR_DESYNC 1L << 31
+#define SAMPLE_ERROR_READ_TOO_LONG 1L << 30
+
+static struct task_wake wake_hx711s;
+
 
 /****************************************************************
- * Module State
+ * Low-level bit-banging
  ****************************************************************/
 
-static struct task_wake hx711s_wake;
-static uint32_t ori_rest_ticks;
+#define MIN_PULSE_TIME nsecs_to_ticks(200)
 
-static int32_t k_slope;      // Median slope
-static int32_t bias_slope;   // Slope-to-rollback ratio
-
-// Sliding window data buffers (per-sensor + fusion channel)
-static int32_t data_list[HX711S_MAX_SENSOR_NUM][HX711S_MAX_DATA_NUM];
-static uint32_t timestamp_list[HX711S_MAX_SENSOR_NUM][HX711S_MAX_DATA_NUM];
-
-// High-pass filter state (one per physical sensor + one for fusion channel)
-static struct hx711s_hpf_params hpf_params[HX711S_MAX_SENSORS];
-static struct hx711s_hpf_params fusion_hpf_params;
-
-// Sliding window filter state
-static int sw_data_count[HX711S_MAX_SENSOR_NUM];
-static int32_t sw_last_out[HX711S_MAX_SENSOR_NUM];
-
-/****************************************************************
- * Utility Functions
- ****************************************************************/
-
-static inline int32_t
-hx711s_abs(int32_t val)
+static uint32_t
+nsecs_to_ticks(uint32_t ns)
 {
-    return (val < 0) ? -val : val;
+    return timer_from_us(ns * 1000) / 1000000;
 }
 
-// Bubble sort for median/window filtering
+// Pause for 200ns
 static void
-bubble_sort(int32_t *array, int len)
+hx711s_delay_noirq(void)
 {
-    for (int i = 0; i < len - 1; i++) {
-        for (int j = 0; j < len - 1 - i; j++) {
-            if (array[j] > array[j + 1]) {
-                int32_t temp = array[j];
-                array[j] = array[j + 1];
-                array[j + 1] = temp;
-            }
-        }
+    if (CONFIG_MACH_AVR) {
+        // Optimize avr, as calculating time takes longer than needed delay
+        asm("nop\n    nop");
+        return;
     }
-}
-
-// Median filter for calibration. Sorts the caller's array in place: the one
-// caller drops the samples immediately afterwards, so the scratch copy this
-// used to keep was a second buffer of HX711S_MAX_CAL_SAMPLES for no gain.
-static int32_t
-median_filter(int32_t *array, int len)
-{
-    if (len > HX711S_MAX_CAL_SAMPLES)
-        len = HX711S_MAX_CAL_SAMPLES;
-    if (len < 1)
-        return 0;
-    bubble_sort(array, len);
-
-    if (len & 1)
-        return array[len / 2];
-    else
-        return (array[len / 2 - 1] + array[len / 2]) / 2;
-}
-
-/****************************************************************
- * High-Pass Filter
- ****************************************************************/
-
-static void
-hpf_init(struct hx711s_hpf_params *p, float coeff, int32_t base)
-{
-    p->vi = base;
-    p->vi_prev = base;
-    p->vo = 0;
-    p->vo_prev = 0;
-    p->coeff = coeff;
-}
-
-static int32_t
-hpf_apply(struct hx711s_hpf_params *p, int32_t input)
-{
-    p->vi = input;
-    p->vo = (int32_t)((float)(p->vi - p->vi_prev + p->vo_prev) * p->coeff);
-    p->vo_prev = p->vo;
-    p->vi_prev = p->vi;
-
-    return p->vo;
-}
-
-/****************************************************************
- * Sliding Window Filter
- ****************************************************************/
-
-static void
-sliding_window_shift(int32_t *array, int len, int32_t data)
-{
-    for (int i = 0; i < len - 1; i++)
-        array[i] = array[i + 1];
-    array[len - 1] = data;
-}
-
-static void
-sliding_window_shift_u32(uint32_t *array, int len, uint32_t data)
-{
-    for (int i = 0; i < len - 1; i++)
-        array[i] = array[i + 1];
-    array[len - 1] = data;
-}
-
-// Sliding window average with exception filtering
-// Returns 1 on success, 0 if value was rejected as outlier
-static int
-sliding_window_avg_exception_filter(int index, int max_data_num,
-                                    int window_data_num, int32_t *data,
-                                    uint32_t timestamp, int32_t exception_th,
-                                    uint8_t enable_hpf)
-{
-    if (max_data_num < 2 || max_data_num > HX711S_MAX_DATA_NUM ||
-        index >= HX711S_MAX_SENSOR_NUM)
-        return 0;
-
-    int32_t filter_data = *data;
-
-    // Apply high-pass filter if enabled (per-sensor state)
-    if (enable_hpf) {
-        if (index == 4)
-            filter_data = hpf_apply(&fusion_hpf_params, *data);
-        else
-            filter_data = hpf_apply(&hpf_params[index], *data);
-    }
-
-    // Check for outlier
-    if (exception_th > 0 && sw_last_out[index] != 0) {
-        int32_t diff = sw_last_out[index] - filter_data;
-        if (hx711s_abs(diff) > exception_th) {
-            *data = sw_last_out[index];
-            return 0;
-        }
-    }
-
-    // Shift data into sliding window
-    sliding_window_shift(data_list[index], max_data_num, filter_data);
-    sliding_window_shift_u32(timestamp_list[index], max_data_num, timestamp);
-
-    // Calculate windowed average
-    int32_t sum = 0;
-    int32_t out;
-
-    if (sw_data_count[index] < max_data_num) {
-        sw_data_count[index]++;
-        for (int i = 0; i < sw_data_count[index]; i++)
-            sum += data_list[index][i];
-        // 1 to max_data_num, which command_config_hx711s sets to 12 or 16
-        out = sdiv_small(sum, sw_data_count[index]);
-    } else {
-        // Sort and trim extremes
-        int32_t sorted[HX711S_MAX_DATA_NUM];
-        memcpy(sorted, data_list[index], max_data_num * sizeof(int32_t));
-        bubble_sort(sorted, max_data_num);
-
-        int start = (max_data_num - window_data_num) / 2;
-        for (int i = start; i < start + window_data_num; i++)
-            sum += sorted[i];
-        // both callers pass max_data_num - 2, so 10 or 14
-        out = sdiv_small(sum, window_data_num);
-    }
-
-    if (out == 0)
-        out = 1;
-
-    sw_last_out[index] = out;
-    return 1;
-}
-
-/****************************************************************
- * Low-Level ADC Reading (HX711 bit-bang)
- ****************************************************************/
-
-#define HX711S_MIN_PULSE_NS 200
-
-// Pulse width in timer ticks, rounded up, never below one. Both operands are
-// compile-time constants, so this folds to a literal. Deriving it at run time
-// through timer_from_us() needed a divide by 1000000, and Cortex-M0 and AVR
-// have no divide instruction, so that pulled a libgcc helper into the image.
-#define HX711S_PULSE_TICKS_RAW                                          \
-    (((uint64_t)HX711S_MIN_PULSE_NS * CONFIG_CLOCK_FREQ + 999999999u)   \
-     / 1000000000u)
-#define HX711S_PULSE_TICKS                                              \
-    ((uint32_t)(HX711S_PULSE_TICKS_RAW < 1u ? 1u : HX711S_PULSE_TICKS_RAW))
-
-static inline void
-hx711s_delay_pulse(void)
-{
-    uint32_t end = timer_read_time() + HX711S_PULSE_TICKS;
+    uint32_t end = timer_read_time() + MIN_PULSE_TIME;
     while (timer_is_before(timer_read_time(), end))
         ;
 }
 
-// Read single sensor via bit-banging.
-// Called from the background task after the timer ISR confirmed DOUT is low.
+// Pause for a minimum of 200ns
 static void
-hx711s_read_sensor(struct hx711s_sensor *h, uint8_t sensor_idx)
+hx711s_delay(void)
 {
-    // Capture the timestamp as early as possible to minimize timing errors.
-    uint32_t capture_time = timer_read_time();
+    if (CONFIG_MACH_AVR)
+        // Optimize avr, as calculating time takes longer than needed delay
+        return;
+    uint32_t end = timer_read_time() + MIN_PULSE_TIME;
+    while (timer_is_before(timer_read_time(), end))
+        irq_poll();
+}
 
-    gpio_out_write(h->clks[sensor_idx], 0);
-
-    // Read 24 data bits
-    int32_t value = 0;
-    for (int i = 0; i < 24; i++) {
+// Read 'num_bits' from one chip
+static uint32_t
+hx711s_raw_read(struct gpio_in dout, struct gpio_out sclk, int num_bits)
+{
+    uint32_t bits_read = 0;
+    while (num_bits--) {
         irq_disable();
-        gpio_out_write(h->clks[sensor_idx], 1);
-        hx711s_delay_pulse();
-        gpio_out_write(h->clks[sensor_idx], 0);
-        if (gpio_in_read(h->sdos[sensor_idx]))
-            value |= 1 << (23 - i);
+        gpio_out_toggle_noirq(sclk);
+        hx711s_delay_noirq();
+        gpio_out_toggle_noirq(sclk);
+        uint_fast8_t bit = gpio_in_read(dout);
         irq_enable();
-        hx711s_delay_pulse();
+        hx711s_delay();
+        bits_read = (bits_read << 1) | bit;
     }
-
-    // Extra clock pulse to set gain for next conversion
-    irq_disable();
-    gpio_out_write(h->clks[sensor_idx], 1);
-    hx711s_delay_pulse();
-    gpio_out_write(h->clks[sensor_idx], 0);
-    irq_enable();
-
-    // Sign extend 24-bit to 32-bit
-    if (value & 0x00800000)
-        value |= 0xFF000000;
-
-    h->sample_values[sensor_idx] = value;
-    h->time_stamp[sensor_idx] = capture_time;
+    return bits_read;
 }
+
 
 /****************************************************************
- * Calibration
+ * Multi-sensor HX711 and HX717 Support
  ****************************************************************/
 
-// Collect baseline sensor values
-// Returns TRUE when calibration complete
-static uint8_t
-calibration_collect(struct hx711s_sensor *h, uint8_t sensor_idx)
-{
-    static int32_t sample_count[HX711S_MAX_SENSORS] = {0};
-    static int32_t samples[HX711S_MAX_SENSORS][HX711S_MAX_CAL_SAMPLES];
-    static int32_t sensor_min[HX711S_MAX_SENSORS] = {0};
-    static int32_t sensor_max[HX711S_MAX_SENSORS] = {0};
-
-    // Calibration complete
-    if (h->times_read == 0) {
-        h->is_calibration = 0x80;
-
-        for (int j = 0; j < (int)h->hx711_count; j++) {
-            if (sample_count[j] > 0) {
-                h->amplitude_values[j] = sensor_max[j] - sensor_min[j];
-                h->init_values[j] = median_filter(samples[j], sample_count[j]);
-
-                // Validate calibration
-                if (hx711s_abs(h->init_values[j]) < hx711s_abs(h->kalman_q[0]))
-                    h->is_calibration |= (0x01 << j);
-
-                if (h->amplitude_values[j] < hx711s_abs(h->kalman_r[0]))
-                    h->is_calibration |= (0x01 << j);
-            } else {
-                h->is_calibration = 0;
-                return 0;
-            }
-            sample_count[j] = 0;
-            sensor_min[j] = 0;
-            sensor_max[j] = 0;
-        }
-        return 1;
-    }
-
-    // Read sensor (timer ISR already confirmed DOUT is low)
-    hx711s_read_sensor(h, sensor_idx);
-
-    // Store sample
-    if ((sensor_idx + 1) == h->hx711_count)
-        h->times_read--;
-
-    if (sensor_min[sensor_idx] == 0)
-        sensor_min[sensor_idx] = h->sample_values[sensor_idx];
-    if (sensor_max[sensor_idx] == 0)
-        sensor_max[sensor_idx] = h->sample_values[sensor_idx];
-
-    if (sample_count[sensor_idx] >= HX711S_MAX_CAL_SAMPLES)
-        return 0;
-
-    samples[sensor_idx][sample_count[sensor_idx]] = h->sample_values[sensor_idx];
-
-    if (h->sample_values[sensor_idx] < sensor_min[sensor_idx])
-        sensor_min[sensor_idx] = h->sample_values[sensor_idx];
-    if (h->sample_values[sensor_idx] > sensor_max[sensor_idx])
-        sensor_max[sensor_idx] = h->sample_values[sensor_idx];
-
-    sample_count[sensor_idx]++;
-
-    return 1;
-}
-
-/****************************************************************
- * Sensor Fusion and Filtering
- ****************************************************************/
-
-static uint8_t
-hx711s_fusion_filter(struct hx711s_sensor *h, uint8_t sensor_idx,
-                     uint8_t enable_hpf)
-{
-    if (!(h->is_calibration & 0x80))
-        return 0;
-
-    // Apply direction correction and baseline offset
-    for (int i = 0; i < (int)h->hx711_count; i++) {
-        if ((h->install_dir >> i) & 0x01)
-            h->calibration_values[i] = -h->sample_values[i] + h->init_values[i];
-        else
-            h->calibration_values[i] = h->sample_values[i] - h->init_values[i];
-    }
-
-    h->time_stamp[4] = h->time_stamp[sensor_idx];
-
-    // Per-sensor sliding window filter
-    if (h->sg_mode != SG_MODE_HX717_HALF_BRIDGE) {
-        if (!sliding_window_avg_exception_filter(
-                sensor_idx, h->max_data_num, h->max_data_num - 2,
-                &h->calibration_values[sensor_idx],
-                h->time_stamp[sensor_idx], 600000, enable_hpf)) {
-            return 0;
-        }
-    }
-
-    // Fuse all sensors by summing
-    h->fusion_filter_value = 0;
-    for (int i = 0; i < (int)h->hx711_count; i++)
-        h->fusion_filter_value += h->calibration_values[i];
-
-    // Fusion channel sliding window filter
-    if (!sliding_window_avg_exception_filter(
-            4, h->max_data_num, h->max_data_num - 2, &h->fusion_filter_value,
-            h->time_stamp[4], 600000, enable_hpf)) {
-        return 0;
-    }
-
-    return 1;
-}
-
-/****************************************************************
- * Trigger Detection
- ****************************************************************/
-
-// Advanced trigger index finder with slope compensation
-static int32_t
-find_trigger_index_new(int32_t *array, struct hx711s_sensor *h)
-{
-    int32_t val[HX711S_MAX_DATA_NUM] = {0};
-    int max_num = h->max_data_num;
-
-    // Ensure data direction is ascending
-    if (array[max_num - 1] - array[0] < 0) {
-        for (int i = 0; i < max_num; i++)
-            val[i] = -array[i];
-    } else {
-        for (int i = 0; i < max_num; i++)
-            val[i] = array[i];
-    }
-
-    // Find minimum for offset removal
-    int32_t val_min = val[0];
-    for (int i = 1; i < max_num; i++) {
-        if (val[i] < val_min) val_min = val[i];
-    }
-
-    // Rotate data to find earliest trigger point using pure integer math.
-    // Instead of normalizing to [0,1] and computing atan()/sin()/cos()
-    // we use the algebraic identity directly:
-    //   rotated_y[i] = -dv * i + dx * (val[i] - val_min)
-    // where dv = val[last]-val[0], dx = last.
-    // The normalization to [0,1] and the scale factor 1/hypot(dx,dv)
-    // are uniform transforms that don't affect which index has the
-    // minimum, so they are omitted entirely.
-    int32_t dv = val[max_num - 1] - val[0]; // >= 0 (ascending)
-    int32_t dx = max_num - 1;
-
-    int32_t out_index = 0;
-    int32_t min_rot = dx * (val[0] - val_min); // i=0 term
-    for (int i = max_num - 1; i >= 0; i--) {
-        int32_t rot = -dv * i + dx * (val[i] - val_min);
-        if (min_rot > rot) {
-            min_rot = rot;
-            out_index = i;
-        }
-    }
-
-    // Linear regression + slope fallback
-    // out_index comes from the loop above, so it is 0 to max_num - 1 and the
-    // divisor is 1 to max_num
-    int32_t kk = sdiv_small(val[max_num - 1] - val[out_index],
-                            max_num - out_index);
-
-    // Calculate slope for compensation
-    int32_t fix_out_index = 0;
-    if (h->find_index_mode & 0x08) {
-        // Fixed pattern slope calculation
-        fix_out_index = sdiv_10000(kk * k_slope) - sdiv_small(bias_slope, 10);
-    } else {
-        if (kk > 2300) {
-          fix_out_index = 11;
-        }
-        else if (kk > 2200) {
-          fix_out_index = 10;
-        }
-        else if (kk > 2100) {
-          fix_out_index = 9;
-        }
-        else if (kk > 2000) {
-          fix_out_index = 8;
-        }
-        else if (kk > 1900) {
-          fix_out_index = 7;
-        }
-        else if (kk > 1700) {
-          fix_out_index = 6;
-        }
-        else if (kk > 1600) {
-          fix_out_index = 5;
-        }
-        else if (kk > 1500) {
-          fix_out_index = 4;
-        }
-        else if (kk > 1300) {
-          fix_out_index = 3;
-        }
-        else if (kk > 1000) {
-          fix_out_index = 2;
-        }
-        else if (kk > 900) {
-          fix_out_index = 1;
-        }
-        else if (kk > 800) {
-          fix_out_index = 0;
-        }
-        else if (kk > 700) {
-          fix_out_index = -1;
-        }
-        else if (kk > 600) {
-          fix_out_index = -2;
-        }
-        else if (kk > 500) {
-          fix_out_index = -3;
-        }
-        else if (kk > 400) {
-          fix_out_index = -4;
-        }
-        else  {
-          fix_out_index = -5;
-        }
-    }
-
-    // Rollback method selection
-    if ((h->find_index_mode & 0x06) == 0x02) {
-        // Backward threshold search
-        for (int i = max_num - 1; i >= 0; i--) {
-            if (h->min_th > val[i]) {
-                out_index = i;
-                break;
-            }
-        }
-    } else if ((h->find_index_mode & 0x06) == 0x04) {
-        // Forward threshold search
-        for (int i = 0; i < max_num; i++) {
-            if (h->min_th < val[i]) {
-                out_index = i;
-                break;
-            }
-        }
-    }
-
-    // Apply slope compensation if enabled
-    if (h->find_index_mode & 0x01) {
-        out_index += fix_out_index;
-        if (out_index < 0)
-            out_index = 0;
-        if (out_index > max_num - 1)
-            out_index = max_num - 1;
-    }
-
-    return out_index;
-}
-
-// Check if trigger conditions are met
-// Returns trigger flags or 0 if not triggered
-static uint8_t
-check_trigger(int32_t *data, struct hx711s_sensor *h)
-{
-    int max_num = h->max_data_num;
-
-    // Calibration mode: use average threshold
-    if (h->probe_check_cmd == PROBE_CHECK_MODE_CALIBRATION) {
-        int32_t avg = 0;
-        for (int i = 0; i < max_num; i++)
-            avg += data[i];
-        avg = sdiv_small(avg, max_num);
-        if (avg < -h->min_th)
-            return 0x60;
-    }
-
-    // Maximum threshold check - immediate trigger
-    int trig = (data[max_num - 1] <= -h->max_th) && (hx711s_abs(data[0]) > 0);
-
-    if (trig) {
-        // Shake filter: reject if any point is positive
-        if (h->enable_shake_filter) {
-            int start = (h->sg_mode == SG_MODE_HX717_HALF_BRIDGE) ?
-                        max_num - 10 : 0;
-            for (int i = start; i < max_num; i++) {
-                if (data[i] > h->min_th)
-                    return 0;
-            }
-        }
-        return 0x40;
-    }
-
-    // Check monotonic increase of last 3 points
-    if (!(hx711s_abs(data[max_num - 1]) > hx711s_abs(data[max_num - 2]) &&
-          hx711s_abs(data[max_num - 2]) > hx711s_abs(data[max_num - 3])))
-        return 0;
-
-
-    // Check last 3 points are largest (in absolute terms)
-    for (int i = 0; i < max_num - 3; i++) {
-      if (hx711s_abs(data[i]) > hx711s_abs(data[max_num - 1]) ||
-          hx711s_abs(data[i]) > hx711s_abs(data[max_num - 2]) ||
-          hx711s_abs(data[i]) > hx711s_abs(data[max_num - 3]))
-            return 0;
-    }
-
-    // Slope check using pure integer math
-    int32_t ival_min = data[0], ival_max = data[0];
-    for (int i = 1; i < max_num; i++) {
-        if (data[i] < ival_min) ival_min = data[i];
-        if (data[i] > ival_max) ival_max = data[i];
-    }
-    int32_t val_range = ival_max - ival_min;
-    if (val_range == 0)
-        return 0; // Flat data, no trigger possible
-
-    // Ensure that the slope of all points relative to the last point is
-    // greater than ~40 degrees, which prevents false triggers caused by
-    // being too sensitive.
-    for (int i = 0; i < max_num - 1; i++) {
-        int32_t diff = data[max_num - 1] - data[i];
-        int32_t dist = max_num - 1 - i;
-        // Reject if slope angle < ~40deg: |k| < 0.8
-        if ((int64_t)hx711s_abs(diff) * max_num * 5
-            < (int64_t)val_range * dist * 4)
-            return 0;
-        // Shake filter: reject positive steep slopes (k > 0.8)
-        if (h->enable_shake_filter
-            && (int64_t)diff * max_num * 5
-               > (int64_t)val_range * dist * 4)
-            return 0;
-    }
-
-    // Minimum threshold check
-    if (hx711s_abs(data[max_num - 1]) < h->min_th)
-        return 0;
-
-    // Shake filter: reject positive values
-    if (h->enable_shake_filter && data[max_num - 1] > h->min_th)
-        return 0;
-
-    return 0x20;
-}
-
-// Main trigger check function
-static int32_t
-trigger_check_new(struct hx711s_sensor *h, uint8_t sensor_idx)
-{
-    int32_t trigger = 0;
-    uint8_t trigger_index = 0;
-    uint8_t check_flag;
-
-    // Check fusion channel first
-    if ((h->enable_channels >> 4) & 0x01) {
-        check_flag = check_trigger(data_list[4], h);
-        if (check_flag) {
-            trigger_index = find_trigger_index_new(data_list[4], h);
-            trigger |= 0x10;
-            trigger |= (check_flag & 0x60);
-            trigger |= (trigger_index << 8);
-            trigger |= (0x01 << sensor_idx);
-            return trigger;
-        }
-    }
-
-    // Check individual sensor
-    if ((h->enable_channels >> sensor_idx) & 0x01) {
-        check_flag = check_trigger(data_list[sensor_idx], h);
-        if (check_flag) {
-            trigger_index = find_trigger_index_new(data_list[sensor_idx], h);
-            trigger |= (0x01 << sensor_idx);
-            trigger |= (check_flag & 0x60);
-            trigger |= (trigger_index << 8);
-            return trigger;
-        }
-    }
-
-    return 0;
-}
-
-/****************************************************************
- * Timer Event Handler
- ****************************************************************/
-
+// Check if data is ready
 static uint_fast8_t
-hx711s_timer_event(struct timer *t)
+hx711s_is_data_ready(struct hx711s_chip *chip)
 {
-    struct hx711s_sensor *h = container_of(t, struct hx711s_sensor, timer);
-    uint32_t rest_ticks = h->rest_ticks;
+    return !gpio_in_read(chip->dout);
+}
 
-    if (!(h->flags & HX711S_FLAG_START))
-        return SF_DONE;
-
-    if (h->flags & HX711S_FLAG_PENDING) {
-        // Previous sample not yet consumed — back off
+// Event handler that wakes wake_hx711s() periodically. One timer per chip,
+// so a chip that is slow to convert cannot delay polling of the others.
+static uint_fast8_t
+hx711s_event(struct timer *timer)
+{
+    struct hx711s_chip *chip = container_of(timer, struct hx711s_chip, timer);
+    struct hx711s_adc *hx711s = chip->adc;
+    uint32_t rest_ticks = hx711s->rest_ticks;
+    uint8_t flags = chip->flags;
+    if (flags & HX_PENDING) {
+        hx711s->sb.possible_overflows++;
+        chip->flags = HX_PENDING | HX_OVERFLOW;
         rest_ticks *= 4;
-    } else {
-        // Check each sensor in rotation for data ready (DOUT low)
-        for (uint8_t i = 0; i < h->hx711_count; i++) {
-            if (!gpio_in_read(h->sdos[i])) {
-                h->pending_sensor = i;
-                h->flags |= HX711S_FLAG_PENDING;
-                sched_wake_task(&hx711s_wake);
-                break;
-            }
-        }
+    } else if (hx711s_is_data_ready(chip)) {
+        // New sample pending
+        chip->flags = HX_PENDING;
+        sched_wake_task(&wake_hx711s);
+        rest_ticks *= 8;
     }
-
-    h->timer.waketime += rest_ticks;
+    chip->timer.waketime += rest_ticks;
     return SF_RESCHEDULE;
 }
 
-/****************************************************************
- * Commands
- ****************************************************************/
+// The load cell is the sum of every chip, the value the probe triggers on
+static int32_t
+hx711s_sum(struct hx711s_adc *hx711s)
+{
+    int32_t sum = 0;
+    for (uint8_t i = 0; i < hx711s->sensor_count; i++)
+        sum += hx711s->chips[i].counts;
+    return sum;
+}
 
+// Emit one sample carrying the latest reading from every chip
+static void
+add_sample(struct hx711s_adc *hx711s, uint8_t oid, uint8_t force_flush)
+{
+    for (uint8_t i = 0; i < hx711s->sensor_count; i++) {
+        struct hx711s_chip *chip = &hx711s->chips[i];
+        uint32_t counts = (uint32_t)chip->counts;
+
+        // forever send errors until reset
+        if (hx711s->last_error != 0) {
+            counts = hx711s->last_error;
+        }
+        
+        // Add measurement to buffer
+        hx711s->sb.data[hx711s->sb.data_count] = counts;
+        hx711s->sb.data[hx711s->sb.data_count + 1] = counts >> 8;
+        hx711s->sb.data[hx711s->sb.data_count + 2] = counts >> 16;
+        hx711s->sb.data[hx711s->sb.data_count + 3] = counts >> 24;
+        hx711s->sb.data_count += BYTES_PER_SAMPLE;
+    }
+
+    if (hx711s->sb.data_count + hx711s->sample_bytes
+        > ARRAY_SIZE(hx711s->sb.data) || force_flush)
+        sensor_bulk_report(&hx711s->sb, oid);
+}
+
+// hx711s ADC query
+static void
+hx711s_read_adc(struct hx711s_chip *chip)
+{
+    struct hx711s_adc *hx711s = chip->adc;
+
+    // Read from sensor
+    uint_fast8_t gain_channel = hx711s->gain_channel;
+    uint32_t adc = hx711s_raw_read(chip->dout, chip->sclk, 24 + gain_channel);
+
+    // Clear pending flag (and note if an overflow occurred)
+    irq_disable();
+    uint8_t flags = chip->flags;
+    chip->flags = 0;
+    irq_enable();
+
+    // Discard the first 4 conversions after a wake as it hasn't settled yet
+    if (chip->settle_remaining) {
+        chip->settle_remaining--;
+        return;
+    }
+
+    // Extract report from raw data
+    uint32_t counts = adc >> gain_channel;
+    if (counts & 0x800000)
+        counts |= 0xFF000000;
+
+    // Check for errors
+    uint_fast8_t extras_mask = (1 << gain_channel) - 1;
+    if ((adc & extras_mask) != extras_mask) {
+        // Transfer did not complete correctly
+        hx711s->last_error = SAMPLE_ERROR_DESYNC;
+    } else if (flags & HX_OVERFLOW) {
+        // Transfer took too long
+        hx711s->last_error = SAMPLE_ERROR_READ_TOO_LONG;
+    } else {
+        chip->counts = (int32_t)counts;
+        chip->counts_ticks = timer_read_time();
+        hx711s->have_counts |= 1 << chip->index;
+    }
+}
+
+// Create a hx711s sensor
 void
 command_config_hx711s(uint32_t *args)
 {
-    struct hx711s_sensor *h = oid_alloc(args[0], command_config_hx711s,
-                                        sizeof(*h));
-    h->oid = args[0];
-    h->hx711_count = args[1] & 0x0F;
-    h->install_dir = (args[1] >> 4) & 0x0F;
-
-    if (h->hx711_count > 4)
-        shutdown("HX711S: Max 4 sensors");
-    if (h->hx711_count < 1)
-        shutdown("HX711S: Min 1 sensor");
-
-    h->sg_mode = (args[3] & 0x0F000000) >> 24;
-
-    h->find_index_mode = (args[2] & 0xF000) >> 12;
-
-    if (h->sg_mode == SG_MODE_HX717_HALF_BRIDGE) {
-        h->sample_period = 1500;
-        h->max_data_num = 16;
-        h->find_index_mode = 0;
-        h->min_th = 0;
-    } else {
-        h->sample_period = args[3] & 0xFFFFFF;
-        h->max_data_num = 12;
+    struct hx711s_adc *hx711s = oid_alloc(args[0]
+                , command_config_hx711s, sizeof(*hx711s));
+    uint8_t sensor_count = args[1];
+    if (sensor_count < 1 || sensor_count > MAX_SENSORS) {
+        shutdown("HX711S sensor count out of range 1-4");
     }
-
-    h->rest_ticks = CONFIG_CLOCK_FREQ / 1000000 * h->sample_period;
-    ori_rest_ticks = h->rest_ticks;
-
-    h->enable_channels = args[2] & 0xFF;
-    h->enable_hpf = (args[2] & 0x0F00) >> 8;
-    h->enable_shake_filter = (args[2] & 0xF0000) >> 16;
-    // Report on a clock deadline rather than every 2000000/sample_period
-    // samples. Same two second cadence, but the sample count needed a divide
-    // by a run-time value, which Cortex-M0 and AVR cannot do without a libgcc
-    // helper. Zero makes the first pass report immediately, as counting from
-    // loop 0 did.
-    h->next_heartbeat_tick = 0;
-
-    h->kalman_q[0] = args[4];
-    h->kalman_r[0] = args[5];
-    h->max_th = args[6];
-    h->min_th = args[7];
-    bias_slope = (args[8] & 0xFF00) >> 8;
-    k_slope = (args[8] & 0xFFFF0000) >> 16;
-
-    h->flags = 0;
-    h->timer.func = hx711s_timer_event;
-
-    h->is_calibration = 0;
-    memset(h->init_values, 0, sizeof(h->init_values));
-    memset(h->sample_values, 0, sizeof(h->sample_values));
-
-    // Initialize high-pass filters. The host derives both coefficients from
-    // sample_period and the sensor count and sends their float bit patterns,
-    // so nothing here divides.
-    float sensor_coeff, fusion_coeff;
-    uint32_t sensor_bits = args[9], fusion_bits = args[10];
-    memcpy(&sensor_coeff, &sensor_bits, sizeof(sensor_coeff));
-    memcpy(&fusion_coeff, &fusion_bits, sizeof(fusion_coeff));
-    for (int i = 0; i < (int)h->hx711_count; i++)
-        hpf_init(&hpf_params[i], sensor_coeff, 0);
-    hpf_init(&fusion_hpf_params, fusion_coeff, 0);
-
-    sendf("debug_hx711s oid=%c arg[0]=%u arg[1]=%u arg[2]=%u arg[3]=%u",
-          (int)args[0], (int)args[0], (int)args[1], (int)args[2], (int)args[3]);
+    hx711s->sensor_count = sensor_count;
+    hx711s->sample_bytes = sensor_count * BYTES_PER_SAMPLE;
+    hx711s->chip_mask = (1 << sensor_count) - 1;
+    uint8_t gain_channel = args[2];
+    if (gain_channel < 1 || gain_channel > 4) {
+        shutdown("HX711S gain/channel out of range 1-4");
+    }
+    hx711s->gain_channel = gain_channel;
+    for (uint8_t i = 0; i < sensor_count; i++) {
+        struct hx711s_chip *chip = &hx711s->chips[i];
+        chip->timer.func = hx711s_event;
+        chip->adc = hx711s;
+        chip->index = i;
+    }
 }
-DECL_COMMAND(command_config_hx711s,
-    "config_hx711s oid=%c hx711_count=%c channels=%u rest_ticks=%u "
-    "kalman_q=%u kalman_r=%u max_th=%u min_th=%u k=%u "
-    "hpf_coeff=%u hpf_fusion_coeff=%u");
+DECL_COMMAND(command_config_hx711s, "config_hx711s oid=%c sensor_count=%c"
+             " gain_channel=%c");
 
+// Assign the pins of one chip
 void
 command_add_hx711s(uint32_t *args)
 {
     uint8_t oid = args[0];
+    struct hx711s_adc *hx711s = oid_lookup(oid, command_config_hx711s);
     uint8_t index = args[1];
-    struct hx711s_sensor *h = oid_lookup(oid, command_config_hx711s);
-
-    if (index >= h->hx711_count)
-        shutdown("HX711S: sensor index out of range");
-
-    h->clks[index] = gpio_out_setup(args[2], 0);
-    h->sdos[index] = gpio_in_setup(args[3], 0);
-
-    sendf("debug_hx711s oid=%c arg[0]=%u arg[1]=%u arg[2]=%u arg[3]=%u",
-          (int)args[0], (int)args[0], (int)args[1], (int)args[2], (int)args[3]);
+    if (index >= hx711s->sensor_count) {
+        shutdown("HX711S sensor index out of range");
+    }
+    struct hx711s_chip *chip = &hx711s->chips[index];
+    chip->dout = gpio_in_setup(args[2], 1);
+    chip->sclk = gpio_out_setup(args[3], 0);
+    gpio_out_write(chip->sclk, 1); // put chip in power down state
 }
-DECL_COMMAND(command_add_hx711s, "add_hx711s oid=%c index=%c clk_pin=%u sdo_pin=%u");
-
-/****************************************************************
- * trsync-based Homing Command
- ****************************************************************/
+DECL_COMMAND(command_add_hx711s, "add_hx711s oid=%c index=%c"
+             " dout_pin=%u sclk_pin=%u");
 
 void
-command_hx711s_home(uint32_t *args)
+hx711s_attach_load_cell_probe(uint32_t *args) {
+    uint8_t oid = args[0];
+    struct hx711s_adc *hx711s = oid_lookup(oid, command_config_hx711s);
+    hx711s->lce = load_cell_probe_oid_lookup(args[1]);
+}
+DECL_COMMAND(hx711s_attach_load_cell_probe, "hx711s_attach_load_cell_probe"
+    " oid=%c load_cell_probe_oid=%c");
+
+// start/stop capturing ADC data
+void
+command_query_hx711s(uint32_t *args)
 {
     uint8_t oid = args[0];
-    struct hx711s_sensor *h = oid_lookup(oid, command_config_hx711s);
-
-    // Clear homing state
-    h->ts = NULL;
-    h->is_homing = 0;
-    h->is_trigger = 0;
-    h->trigger_tick = 0;
-    h->trigger_index = 0;
-    h->flags = 0;
-
-    // If trsync_oid is 0, homing is finished
-    if (args[1] == 0) {
+    struct hx711s_adc *hx711s = oid_lookup(oid, command_config_hx711s);
+    for (uint8_t i = 0; i < hx711s->sensor_count; i++) {
+        sched_del_timer(&hx711s->chips[i].timer);
+        hx711s->chips[i].flags = 0;
+    }
+    hx711s->last_error = 0;
+    hx711s->have_counts = 0;
+    hx711s->rest_ticks = args[1];
+    if (!hx711s->rest_ticks) {
+        // End measurements
+        for (uint8_t i = 0; i < hx711s->sensor_count; i++)
+            gpio_out_write(hx711s->chips[i].sclk, 1); // power down state
         return;
     }
-
-    // Setup homing with trsync
-    h->ts = trsync_oid_lookup(args[1]);
-    h->homing_clock = args[2];
-    h->trigger_reason = args[3];
-    h->error_reason = args[4];
-    h->is_homing = 1;
-    h->flags = HX711S_FLAG_START | HX711S_FLAG_AWAIT_HOMING;
-}
-DECL_COMMAND(command_hx711s_home,
-    "hx711s_home oid=%c trsync_oid=%c clock=%u trigger_reason=%c error_reason=%c");
-
-// Query homing trigger state
-void
-command_hx711s_query_state(uint32_t *args)
-{
-    uint8_t oid = args[0];
-    struct hx711s_sensor *h = oid_lookup(oid, command_config_hx711s);
-
-    sendf("hx711s_state oid=%c is_triggered=%c trigger_ticks=%u",
-          oid, h->is_trigger > 0, h->trigger_tick);
-}
-DECL_COMMAND(command_hx711s_query_state, "hx711s_query_state oid=%c");
-
-void
-command_calibration_sample(uint32_t *args)
-{
-    uint8_t oid = args[0];
-    struct hx711s_sensor *h = oid_lookup(oid, command_config_hx711s);
-
-    h->times_read = args[1];
-    if (h->times_read < 1)
-        h->times_read = 50;
-    else if (h->times_read > HX711S_MAX_CAL_SAMPLES)
-        h->times_read = HX711S_MAX_CAL_SAMPLES;
-
-    h->rest_ticks = ori_rest_ticks;
-    h->is_calibration = 0;
-
-    memset(h->init_values, 0, sizeof(h->init_values));
-    memset(h->calibration_values, 0, sizeof(h->calibration_values));
-    memset(h->sample_values, 0, sizeof(h->sample_values));
-    memset(data_list, 0, sizeof(data_list));
-    memset(timestamp_list, 0, sizeof(timestamp_list));
-    memset(sw_data_count, 0, sizeof(sw_data_count));
-    memset(sw_last_out, 0, sizeof(sw_last_out));
-
-    h->is_trigger = 0;
-    h->trigger_tick = 0;
-    h->probe_check_cmd = 0;
-
-    h->flags |= HX711S_FLAG_START;
-
-    sched_del_timer(&h->timer);
+    // Start new measurements
+    for (uint8_t i = 0; i < hx711s->sensor_count; i++)
+        gpio_out_write(hx711s->chips[i].sclk, 0); // wake chip from power down
+    sensor_bulk_reset(&hx711s->sb);
     irq_disable();
-    h->timer.waketime = timer_read_time() + h->rest_ticks;
-    sched_add_timer(&h->timer);
+    uint32_t waketime = timer_read_time() + hx711s->rest_ticks;
+    for (uint8_t i = 0; i < hx711s->sensor_count; i++) {
+        hx711s->chips[i].settle_remaining = SETTLE_CONVERSIONS;
+        hx711s->chips[i].counts_ticks = waketime;
+        hx711s->chips[i].timer.waketime = waketime;
+        sched_add_timer(&hx711s->chips[i].timer);
+    }
     irq_enable();
-
-    sendf("debug_hx711s oid=%c arg[0]=%u arg[1]=%u arg[2]=%u arg[3]=%u",
-          oid, 1, 0, 0, 0);
 }
-DECL_COMMAND(command_calibration_sample, "calibration_sample oid=%c times_read=%hu");
-
-/****************************************************************
- * Background Task
- ****************************************************************/
+DECL_COMMAND(command_query_hx711s, "query_hx711s oid=%c rest_ticks=%u");
 
 void
-hx711s_task(void)
+command_query_hx711s_status(const uint32_t *args)
 {
-    static uint8_t sensor_idx = 0;
-    static uint32_t loop = 0;
-    static uint32_t last_rep_loop = 0;
-    static uint8_t last_is_calibration = 0;
-    static uint8_t last_is_trigger = 0;
+    uint8_t oid = args[0];
+    struct hx711s_adc *hx711s = oid_lookup(oid, command_config_hx711s);
+    irq_disable();
+    const uint32_t start_t = timer_read_time();
+    // The primary chip paces the sample stream, so only a conversion pending
+    // on that chip is a sample the host has not been sent yet
+    uint8_t is_data_ready = hx711s_is_data_ready(&hx711s->chips[0]);
+    irq_enable();
+    uint8_t pending_bytes = is_data_ready ? hx711s->sample_bytes : 0;
+    sensor_bulk_status(&hx711s->sb, oid, start_t, 0, pending_bytes);
+}
+DECL_COMMAND(command_query_hx711s_status, "query_hx711s_status oid=%c");
 
-    if (!sched_check_wake(&hx711s_wake))
+// Background task that performs measurements
+void
+hx711s_capture_task(void)
+{
+    if (!sched_check_wake(&wake_hx711s))
         return;
-
     uint8_t oid;
-    struct hx711s_sensor *h;
-
-    foreach_oid(oid, h, command_config_hx711s) {
-        if (!(h->flags & HX711S_FLAG_PENDING))
-            continue;
-
-        // Use the sensor index that the timer ISR found ready
-        sensor_idx = h->pending_sensor;
-
-        // Clear pending flag so the timer ISR can signal again
-        irq_disable();
-        h->flags &= ~HX711S_FLAG_PENDING;
-        irq_enable();
-
-        loop++;
-
-        // Calibration phase
-        if (!(h->is_calibration & 0x80)) {
-            last_is_calibration = h->is_calibration;
-            calibration_collect(h, sensor_idx);
-            continue;
-        }
-
-
-        uint32_t now_tick = timer_read_time();
-
-        // Read the ADC (timer ISR already confirmed DOUT is low)
-        hx711s_read_sensor(h, sensor_idx);
-
-        // Wait for homing_clock before enabling trigger detection
-        if (h->flags & HX711S_FLAG_AWAIT_HOMING) {
-            if (timer_is_before(now_tick, h->homing_clock))
+    struct hx711s_adc *hx711s;
+    foreach_oid(oid, hx711s, command_config_hx711s) {
+        // Read every chip holding data before emitting, so a sample carries
+        // the freshest reading available from each of them
+        uint8_t read_primary = 0;
+        for (uint8_t i = 0; i < hx711s->sensor_count; i++) {
+            if (!hx711s->chips[i].flags)
                 continue;
-            h->flags &= ~HX711S_FLAG_AWAIT_HOMING;
+            hx711s_read_adc(&hx711s->chips[i]);
+            if (i == 0)
+                read_primary = 1;
         }
-
-        // Fusion filter
-        if (!hx711s_fusion_filter(h, sensor_idx, h->enable_hpf))
-            continue;
-
-        // Trigger detection
-        int32_t trigger = trigger_check_new(h, sensor_idx);
-
-        uint8_t is_triggered = (trigger > 0);
-        uint8_t was_triggered = (h->is_trigger > 0);
-
-
-        if (!is_triggered) {
-          // Not homing and no trigger - clear state
-          // During homing, keep trigger latched so query_state returns correct
-          // value
-          if (!h->is_homing) {
-            h->is_trigger = 0;
-            h->trigger_tick = 0;
-          }
-        } else if (!was_triggered) {
-            // Trigger just detected - latch state
-            h->is_trigger = trigger & 0xFF;
-            h->trigger_index = (trigger >> 8) & 0xFF;
-
-            if (h->is_trigger & 0x10)
-                h->trigger_tick = timestamp_list[4][h->trigger_index]; // fusion channel timestamp
-            else
-                h->trigger_tick = timestamp_list[sensor_idx][h->trigger_index]; // individual sensor timestamp
-
-            // Fire trsync if necessary
-            if (h->is_homing && h->ts != NULL) {
-                trsync_do_trigger(h->ts, h->trigger_reason);
-            }
+        // Drop a chip that has stopped producing readings. Its held counts
+        // are stale and a sum missing a cell reads low, which would trigger
+        // the probe late or not at all. A poll is a tenth of a conversion.
+        uint32_t stale_ticks = hx711s->rest_ticks * 10 * STALE_CONVERSIONS;
+        uint32_t now = timer_read_time();
+        for (uint8_t i = 0; i < hx711s->sensor_count; i++) {
+            if (timer_is_before(hx711s->chips[i].counts_ticks + stale_ticks
+                                , now))
+                hx711s->have_counts &= ~(1 << i);
         }
-
-        // Report heartbeat or trigger
-        uint8_t heartbeat_due = !timer_is_before(now_tick,
-                                                 h->next_heartbeat_tick);
-        if (heartbeat_due)
-            h->next_heartbeat_tick = now_tick + HX711S_HEARTBEAT_TICKS;
-
-        if (heartbeat_due ||
-            was_triggered != is_triggered ||
-            last_is_calibration != h->is_calibration) {
-
-            if (hx711s_abs((int32_t)(loop - last_rep_loop)) > 80 ||
-                last_is_trigger == 0) {
-                last_rep_loop = loop;
-
-                sendf("sg_resp oid=%c vd=%c it=%c nt=%u r=%u tt=%u",
-                      (uint8_t)h->oid,
-                      (uint8_t)h->is_calibration,
-                      (uint8_t)h->trigger_index,
-                      (uint32_t)h->trigger_tick,
-                      (uint32_t)h->is_trigger,
-                      (uint32_t)now_tick);
+        // The primary chip sets the sample rate. Its conversions are evenly
+        // spaced, which is what the host clock tracking assumes, while the
+        // remaining channels are held at their most recent reading. Wait for
+        // every chip to report once so no sample carries an unset channel.
+        if (read_primary && (hx711s->last_error
+                             || hx711s->have_counts == hx711s->chip_mask)) {
+            // probe is optional, report if enabled. Reporting here rather
+            // than on each chip read keeps the probe's filter running at the
+            // rate its coefficients were designed for. A bad frame is still
+            // reported: the held counts are at most one conversion old, far
+            // too little to move the force past the trigger, and withholding
+            // reports would starve the probe watchdog and abort the homing
+            // move instead.
+            if (hx711s->last_error == 0 && hx711s->lce) {
+                load_cell_probe_report_sample(hx711s->lce,
+                                              hx711s_sum(hx711s));
             }
-
-            last_is_trigger = h->is_trigger;
-            last_is_calibration = h->is_calibration;
+            // Add measurement to buffer
+            add_sample(hx711s, oid, false);
         }
     }
 }
-DECL_TASK(hx711s_task);
-
-void
-hx711s_shutdown(void)
-{
-    uint8_t oid;
-    struct hx711s_sensor *h;
-
-    foreach_oid(oid, h, command_config_hx711s) {
-        h->times_read = 0;
-        h->flags &= ~HX711S_FLAG_START;
-    }
-}
-DECL_SHUTDOWN(hx711s_shutdown);
+DECL_TASK(hx711s_capture_task);
