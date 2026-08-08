@@ -1952,7 +1952,7 @@ gcode:
 #   Default is 0.
 #description: Update the duration of a delayed_gcode
 #   This will add a short description used at the HELP command or while
-#   using the auto completion feature. Default "Update the duration of
+#   using the auto completion feature. Default "Update the duration of 
 #   a delayed_gcode"
 ```
 
@@ -2539,7 +2539,7 @@ z_offset:
 #   printers that have an outlier first sample.
 #⚠️ bad_probe_strategy: RETRY
 #   Strategy to apply when a probe attempt is considered "bad" based on
-#   the probe's quality detection logic. If the probe doesn't support
+#   the probe's quality detection logic. If the probe doesn't support 
 #   quality detection all probes are assumed to be good.
 #   One of: fail, ignore, retry or circle.
 #   - fail: Stop immediately with an error on first bad probe.
@@ -2571,7 +2571,7 @@ z_offset:
 
 ### [nozzle_cleanup]
 
-Enables the [NOZZLE_CLEANUP](G-Codes.md#nozzle_cleanup) gcode command. This
+Enables the [NOZZLE_CLEANUP](G-Codes.md#nozzle_cleanup) gcode command. This 
 performs a nozzle cleaning routine that probes over a grid pattern to
 remove ooze from the nozzle. To work correctly your probe needs to support probe
 quality detection, such as the [load_cell_probe](#load_cell_probe).
@@ -3495,9 +3495,9 @@ sensor_type: BME280
 #   above parameters.
 ```
 
-### AHT10/AHT20/AHT21 temperature sensor
+### AHT10/AHT20/AHT21/AHT30 temperature sensor
 
-AHT10/AHT20/AHT21 two wire interface (I2C) environmental sensors.
+AHT10/AHT20/AHT21/AHT30 two wire interface (I2C) environmental sensors.
 Note that these sensors are not intended for use with extruders and
 heater beds, but rather for monitoring ambient temperature (C) and
 relative humidity. See
@@ -3506,7 +3506,8 @@ that may be used to report humidity in addition to temperature.
 
 ```
 sensor_type: AHT10
-#   Also use AHT10 for AHT20 and AHT21 sensors.
+#   Must be "AHT1X" , "AHT2X", "AHT3X"
+#   Some AHT20 sensors can use "AHT1X"
 #i2c_address:
 #   Default is 56 (0x38). Some AHT10 sensors give the option to use
 #   57 (0x39) by moving a resistor.
@@ -5893,9 +5894,6 @@ sensor_pin:
 ### [load_cell]
 Load Cell. Uses an ADC sensor attached to a load cell to create a digital
 scale.
-
-The `sensor_type` selects the underlying sensor implementation. See the
-chip-specific sections below for the sensor configuration parameters.
 ```
 [load_cell]
 sensor_type:
@@ -5912,20 +5910,12 @@ sensor_type:
 #   decreasing force value when placed under load.
 ```
 
-### [hx71x]
-Named HX71x sensor section. Supports both HX711 and HX717 chips.
-
-The default sensor name is `hx71x`, but one may specify an explicit name
-(eg, `[hx71x sg0]`). Explicit names are primarily useful when another
-configuration references the sensor by name, such as `load_cell_fusion`.
-Use `chip` to select the device variant.
-
 #### HX711
 This is a 24 bit low sample rate chip using "bit-bang" communications. It is
 suitable for filament scales.
 ```
-[hx71x]
-chip: hx711
+[load_cell]
+sensor_type: hx711
 sclk_pin:
 #   The pin connected to the HX711 clock line. This parameter must be provided.
 dout_pin:
@@ -5945,8 +5935,8 @@ dout_pin:
 #### HX717
 This is the 4x higher sample rate version of the HX711, suitable for probing.
 ```
-[hx71x]
-chip: hx717
+[load_cell]
+sensor_type: hx717
 sclk_pin:
 #   The pin connected to the HX717 clock line. This parameter must be provided.
 dout_pin:
@@ -5963,17 +5953,12 @@ dout_pin:
 #   in software.
 ```
 
-### [ads1220]
-Named ADS1220 sensor section.
-
-The default sensor name is `ads1220`, but one may specify an explicit name
-(eg, `[ads1220 sg0]`). Explicit names are primarily useful when another
-configuration references the sensor by name, such as `load_cell_fusion`.
-
+#### ADS1220
 The ADS1220 is a 24 bit ADC supporting up to a 2Khz sample rate configurable in
 software.
 ```
-[ads1220]
+[load_cell]
+sensor_type: ads1220
 cs_pin:
 #   The pin connected to the ADS1220 chip select line. This parameter must
 #   be provided.
@@ -6019,18 +6004,119 @@ data_ready_pin:
 #   and 'analog_supply'. Default is 'internal'.
 ```
 
-### Load Cell Fusion
-Combine multiple named sensor sections into one logical load cell. The fused
-output uses the latest sample from each sensor and reports at the aggregate
-sample rate.
+#### ADS131M02
+The ADS131M02 is a 24 bit, 2-channel delta-sigma ADC with simultaneous
+sampling. It uses SPI communication and provides high precision measurements
+suitable for load cell probing.
 ```
 [load_cell]
-sensor_type: load_cell_fusion
-sensors:
-#   A comma separated list of named sensor sections, using the full section
-#   name (e.g. `hx71x sg0`). Prefix an entry with `!` to invert that
-#   sensor's contribution. Example: sensors: hx71x sg0, !hx71x sg1
+sensor_type: ads131m02
+cs_pin:
+#   The pin connected to the ADS131M02 chip select line. This parameter must
+#   be provided.
+#spi_speed: 8192000
+#   SPI bus speed. The default is 8.192 MHz.
+#spi_bus:
+#spi_software_sclk_pin:
+#spi_software_mosi_pin:
+#spi_software_miso_pin:
+#   See the "common SPI settings" section for a description of the
+#   above parameters.
+data_ready_pin:
+#   Pin connected to the ADS131M02 data ready (DRDY) line. This parameter must
+#   be provided.
+#gain: 128
+#   Programmable gain amplifier setting. Valid values are 1, 2, 4, 8, 16, 32,
+#   64, and 128. The default is 128.
+#sample_rate: 500
+#   Sample rate in samples per second. Valid values are 250, 500, 1000, 2000,
+#   4000, 8000, 16000, and 32000. The default is 500.
+#enable_global_chop: False
+#   Enable the global chopper mode. This mode alternats the polarity of the inputs
+#   for each samlple. This reduces noise but also reduces the effective 
+#   sample rate to 1/3rd of its face value. Off by default.
+#gloabl_chop_delay: 16
+#   The delay, in clock cycles, between sample in global chop mode. This allows 
+#   additional time for settling before sampling starts. The chip default is 16 
+#   clock cycles. Values are powers of 2 from 2 to 65536. 
+#channels: 0
+#   Comma separated list of input channels to enable and sum. Valid channels are 0 and 1.
+#   The default is 0.
 ```
+
+#### ADS131M04
+The ADS131M04 is a 24 bit, 4-channel delta-sigma ADC with simultaneous
+sampling. It uses SPI communication and provides high precision measurements
+suitable for load cell probing. Up to 4 channels can be combined into a single
+sensor ideal for under bed load cells.
+```
+[load_cell]
+sensor_type: ads131m04
+cs_pin:
+#spi_speed: 8192000
+#spi_bus:
+#spi_software_sclk_pin:
+#spi_software_mosi_pin:
+#spi_software_miso_pin:
+data_ready_pin:
+#gain: 128
+#sample_rate: 500
+#enable_global_chop: False
+#gloabl_chop_delay: 16
+#   See the "ADS131M02" sections for details on these parameters.
+#channels: 0
+#   Comma separated list of input channels to enable and sum. Valid channels
+#   are: 0, 1, 2, 3. The default is 0.
+```
+
+#### HX711S
+Support for 1 to 4 HX711 chips wired as a multi-channel load cell sensor. Each
+chip's reading is reported as a separate ADC channel and the `load_cell` sums
+them, making this suitable for under-bed configurations with multiple strain
+gauges. Each chip is read on its own data ready edge and never waits on another,
+so chips do not need to be phase-aligned.
+```
+[load_cell]
+sensor_type: hx711s
+sdo_pins:
+#   Comma-separated list of pins connected to the HX711 DOUT lines, one per
+#   chip. Between 1 and 4 pins must be specified. All pins must be on the same
+#   MCU. The first chip listed paces the sample stream. This parameter must be
+#   provided.
+sclk_pins:
+#   Comma-separated list of pins connected to the HX711 SCLK lines, one per
+#   chip. Must match the order and count of sdo_pins. This parameter must be
+#   provided.
+#gain: A-128
+#   Valid values are: A-128, A-64, B-32. The default is A-128. Changing the
+#   gain also selects the input channel. This setting applies to all chips.
+#sample_rate: 80
+#   Valid values are 80 or 10. The default is 80. This must match the hardware
+#   wiring of the RATE pin, which is shared by all chips. The sample rate
+#   cannot be changed in software.
+```
+
+#### HX717S
+Support for 1 to 4 HX717 chips wired as a multi-channel load cell sensor. The
+HX717 is the higher sample rate version of the HX711. See [HX711S](#hx711s)
+for wiring notes; the same chip-per-pin model applies.
+```
+[load_cell]
+sensor_type: hx717s
+sdo_pins:
+#   Comma-separated list of pins connected to the HX717 DOUT lines, one per
+#   chip. Between 1 and 4 pins must be specified. All pins must be on the same
+#   MCU.
+sclk_pins:
+#   Comma-separated list of pins connected to the HX717 SCLK lines, one per
+#   chip. Must match the order and count of sdo_pins.
+#gain: A-128
+#   Valid values are: A-128, B-64, A-64, B-8. The default is A-128.
+#sample_rate: 320
+#   Valid values are: 10, 20, 80, 320. The default is 320. This must match
+#   the hardware wiring of the RATE pin shared by all chips.
+```
+
 
 ### [load_cell_probe]
 Load Cell Probe. This combines the functionality of a [probe] and a [load_cell].
@@ -6059,7 +6145,10 @@ sensor_type:
 #drift_filter_cutoff_frequency: 0.8
 #   Enable optional continuous taring while homing & probing to reject drift.
 #   The value is a frequency, in Hz, below which drift will be ignored. This
-#   option requires the SciPy library. Default: None
+#   option requires the SciPy library. Can be automatically calibrated using 
+#   `LOAD_CELL_PROBE_CALIBRATE CALIBRATION=DRIFT_FILTER`. 
+#   See [Drift Filter Calibration](Load_Cell.md#drift-filter-calibration).
+#   Default: None
 #drift_filter_delay: 2
 #   The delay, or 'order', of the drift filter. This controls the number of
 #   samples required to make a trigger detection. Can be 1 or 2, the default
@@ -6093,8 +6182,10 @@ sensor_type:
 #   The distance in mm to slowly raise the probe to perform precise Z=0
 #   measurments. This move occurs immediately after the probe detects contact.
 #   The distance needs to be approximatly 2x the distance required for the probe
-#   to break contact with the bed. Valid range is 0.01 to 2.0 mm.
-#   The default is 0.2 mm.
+#   to break contact with the bed. Can be automatically calibrated using
+#   `LOAD_CELL_PROBE_CALIBRATE CALIBRATION=PULLBACK_DISTANCE`.
+#   See [Pullback Distance Calibration](Load_Cell.md#pullback-distance-calibration).
+#   Valid range is 0.01 to 2.0 mm. The default is 0.2 mm.
 #pullback_speed:
 #   The speed in mm/s for the pullback move after probe trigger. Valid range is
 #   0.1 to 1.0 mm/s. The default is set to 1 micron (0.001mm) per sensor sample.
@@ -6108,7 +6199,9 @@ sensor_type:
 #   The average angle of the decompression line for clean taps. The further the
 #   measured decompression angle is from this angle, the worse its tap quality score.
 #   There is no default, this must be measured. It is a number in degrees
-#   between 0 and 90.
+#   between 0 and 90. Can be automatically calibrated using
+#   `LOAD_CELL_PROBE_CALIBRATE CALIBRATION=DECOMPRESSION_ANGLE`.
+#   See [Decompression Angle Calibration](Load_Cell.md#decompression-angle-calibration).
 #max_approach_force: 50
 #max_departure_force: 25
 #max_baseline_force_delta: 25
