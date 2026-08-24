@@ -1145,14 +1145,20 @@ class DriftFilterCalibration:
                 failed_count += 1
             else:
                 max_filter_cutoff = cutoff_freq
-        self._config_helper.save_drift_filter_cutoff_frequency(
-            round(max_filter_cutoff, 4)
-        )
         if failed_count > 0:
             raise gcmd.error(
                 f"WARNING: {failed_count} calibrations failed with the "
                 f"max_cutoff_frequency={max_cutoff_frequency}Hz"
             )
+        # Persist only AFTER the failure check. This command raises on any failed
+        # iteration, so saving above the check staged a value derived from a run
+        # that then aborted. On this machine a SAVE_CONFIG value outranks
+        # machine.cfg, so that value became the permanent floor: the same shape as
+        # the load-cell gain scar, where a stale saved counts_per_gram outranked
+        # the image and every probe triggered in mid-air.
+        self._config_helper.save_drift_filter_cutoff_frequency(
+            round(max_filter_cutoff, 4)
+        )
         gcmd.respond_info(
             f"Minimum drift filter cutoff: {max_filter_cutoff:.1f}Hz\n"
             f"drift_filter_cutoff_frequency={max_filter_cutoff:.1f}\n"
